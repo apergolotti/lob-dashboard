@@ -236,6 +236,7 @@
     .analysis-flag.warn { background: var(--yellow-bg); border: 1px solid var(--yellow-border); color: var(--yellow); }
     .analysis-flag.alert { background: var(--red-bg); border: 1px solid var(--red-border); color: var(--red); }
     .analysis-flag.info { background: var(--blue-bg); border: 1px solid var(--blue-border); color: var(--blue); }
+    .analysis-flag.fix { background: #fdf2e8; border: 1px solid #f0d0a8; color: var(--orange); }
     .analysis-flag-icon { flex-shrink: 0; margin-top: 1px; }
     .no-flags { font-size: 0.78rem; color: var(--green); display: flex; align-items: center; gap: 0.4rem; }
 
@@ -381,6 +382,24 @@ function linkField(t, labelRe) {
   return m ? clean(m[1]) : null;
 }
 
+// True when a field contains placeholder or non-answer text
+function isPlaceholder(v) {
+  if (!v) return false;
+  const s = v.trim().toLowerCase();
+  if (['tbd','tbc','to be determined','to be confirmed','pending'].includes(s)) return true;
+  // Template boilerplate left unreplaced
+  if (v.includes('- version, date, contract needs:') && v.trim().startsWith('- version')) return true;
+  return false;
+}
+
+// True when weekly wins is clearly filler rather than real accomplishments
+function isThinFiller(v) {
+  if (!v) return false;
+  if (v.trim().length < 30) return true;
+  const s = v.trim().toLowerCase();
+  return /^(no major issues?|no issues? or incidents?|system(s)? (is |are )?(stable|healthy|operational|running)|nothing (new|to report|significant)|all systems? (up|green|operational|normal)|no updates? this week|no significant (updates?|changes?)|no new (updates?|issues?))/.test(s);
+}
+
 function parseStatus(status) {
   if (!status) return {};
   const t = status;
@@ -488,51 +507,112 @@ function computeMissing(status) {
   return checks.filter(([, , ok]) => !ok).map(([key, label]) => ({ key, label }));
 }
 
-// Analyze an account and return flagged observations
+// Analyze an account and return flagged observations.
+// Types: 'alert' (urgent/risk), 'warn' (discussion topic), 'info' (FYI),
+//        'fix' (CSDM needs to correct their update)
 function analyzeAccount(row, sections) {
   const flags = [];
   const days = daysAgo(row.updated);
+  const { issues, upcoming, nextFocus, interruptions, within9mo,
+          renewalFeedback, renewalNextSteps, nextVersion,
+          currentVersions, weeklyWins } = sections;
 
-  if (!row.updated || days === 999) flags.push({ type: 'alert', msg: 'No update date recorded — was LOB Details updated?' });
-  else if (isStale(row.updated)) flags.push({ type: 'alert', msg: `Last updated ${weekdayName(row.updated)}, ${formatDate(row.updated)} (${days}d ago) — off the Wed/Thu cadence` });
+  // ── Cadence ──────────────────────────────────────────────────────────────
+  if (!row.updated || days === 999)
+    flags.push({ type: 'alert', msg: 'No update date recorded — was LOB Details updated?' });
+  else if (isStale(row.updated))
+    flags.push({ type: 'alert', msg: `Last updated ${weekdayName(row.updated)}, ${formatDate(row.updated)} (${days}d ago) — off the Wed/Thu cadence` });
 
   if (!row.status || row.status.trim().length < 50)
     flags.push({ type: 'alert', msg: 'Status field is empty or very thin — needs meaningful content' });
 
-  const issues = sections.issues;
+  // ── Status consistency ────────────────────────────────────────────────────
   if (issues && row.sentiment === 'Green')
-    flags.push({ type: 'warn', msg: `Issues listed but sentiment is Green — may be understating account risk` });
+    flags.push({ type: 'warn', msg: 'Issues listed but Customer Sentiment is Green — may be understating risk' });
   if (issues && row.operations === 'Green')
-    flags.push({ type: 'warn', msg: `Issues listed but Operations is Green — ops status may need updating` });
+    flags.push({ type: 'warn', msg: 'Issues listed but Operations is Green — ops status may need updating' });
 
-  // Flag every template field the CSDM left blank (raw presence — a written
-  // "No"/"None"/"N/A"/"0" counts as addressed; only truly empty fields flag).
-  const missing = computeMissing(row.status);
-  if (missing.length)
-    flags.push({ type: 'warn', msg: `Missing from update (${missing.length}): ${missing.map(m => m.label).join(', ')}` });
-
-  if (row.sentiment === 'Yellow' && !sections.issues)
-    flags.push({ type: 'warn', msg: 'Yellow sentiment but no Issues/Concerns text — what is driving the yellow?' });
-
-  const ints = sections.interruptions;
-  if (ints) {
-    const n = parseInt(ints.replace(/\D/g,''));
-    if (n >= 3) flags.push({ type: 'warn', msg: `${n} service interruptions in past 3 months — worth discussing in 1:1` });
+  const isYellow = row.sentiment !== 'Green' || row.operations !== 'Green';
+  if (isYellow && !issues) {
+    const which = row.sentiment !== 'Green' && row.operations !== 'Green'
+      ? 'Sentiment and Operations are both non-green'
+      : row.sentiment !== 'Green' ? `Customer Sentiment is ${row.sentiment}`
+      : `Operations is ${row.operations}`;
+    flags.push({ type: 'warn', msg: `${which} but no Issues/Concerns documented — what is driving this?` });
   }
 
-  const within9mo = sections.within9mo;
-  if (within9mo && within9mo.toLowerCase().includes('yes')) {
-    const fb = sections.renewalFeedback || '';
-    if (fb.toLowerCase().includes('cancel') || fb.toLowerCase().includes('non-renewal') || fb.toLowerCase().includes('not renewing'))
-      flags.push({ type: 'alert', msg: `Within 9 months of contract end — customer feedback indicates NON-RENEWAL` });
-    else if (!sections.renewalNextSteps)
-      flags.push({ type: 'warn', msg: 'Within 9 months of contract end — no renewal next steps documented' });
+  // ── Issues without action plan ────────────────────────────────────────────
+  if (issues && !upcoming && !nextFocus)
+    flags.push({ type: 'warn', msg: 'Issues documented but no Upcoming Milestones or Next Week\'s Focus — no visible action plan' });
+
+  // ── Service health ────────────────────────────────────────────────────────
+  if (interruptions) {
+    const n = parseInt(interruptions.replace(/\D/g, ''));
+    if (!isNaN(n) && n >= 3)
+      flags.push({ type: 'warn', msg: `${n} service interruptions in past 3 months — discuss impact and resolution plan` });
+  }
+  if (sections.sla) {
+    const pct = parseFloat(sections.sla.replace(/[^0-9.]/g, ''));
+    if (!isNaN(pct) && pct < 99.0)
+      flags.push({ type: 'warn', msg: `SLA at ${sections.sla} — below 99% threshold, discuss impact with CSDM` });
+  }
+
+  // ── Renewal ───────────────────────────────────────────────────────────────
+  const isWithin9 = within9mo && within9mo.toLowerCase().includes('yes');
+  const fbLow = (renewalFeedback || '').toLowerCase();
+  const nonRenewal = /non-renewal|not renewing|cancell?ation|will not renew|decommission/.test(fbLow);
+
+  if (nonRenewal) {
+    flags.push({ type: 'alert', msg: 'Customer feedback indicates NON-RENEWAL or cancellation' });
+    if (!renewalNextSteps || isPlaceholder(renewalNextSteps))
+      flags.push({ type: 'alert', msg: 'Non-renewal confirmed but no next steps documented — what is the offboarding/retention plan?' });
+    if (row.sentiment === 'Green' && row.operations === 'Green')
+      flags.push({ type: 'warn', msg: 'Non-renewal confirmed but both statuses are Green — should status reflect the situation?' });
+  } else if (isWithin9) {
+    if (!renewalFeedback || isPlaceholder(renewalFeedback))
+      flags.push({ type: 'warn', msg: 'Within 9 months of contract end — no clear renewal feedback; where does the customer stand?' });
+    else if (!renewalNextSteps || isPlaceholder(renewalNextSteps))
+      flags.push({ type: 'warn', msg: 'Within 9 months of contract end — renewal feedback present but next steps are missing or TBD' });
     else
-      flags.push({ type: 'info', msg: `Renewal approaching — next steps: ${sections.renewalNextSteps}` });
+      flags.push({ type: 'info', msg: `Renewal in progress — next steps: ${renewalNextSteps.substring(0, 100)}` });
   }
 
-  if (sections.renewalFeedback && (sections.renewalFeedback.toLowerCase().includes('cancel') || sections.renewalFeedback.toLowerCase().includes('non-renewal')))
-    flags.push({ type: 'alert', msg: `Customer feedback indicates cancellation or non-renewal risk` });
+  // ── Update quality (CSDM to fix) ──────────────────────────────────────────
+  const missing = computeMissing(row.status);
+  const mk = new Set(missing.map(m => m.key));
+
+  if (mk.has('weeklyWins'))
+    flags.push({ type: 'fix', msg: 'Weekly Accomplishments not filled in — CSDM to complete' });
+  else if (weeklyWins && isThinFiller(weeklyWins))
+    flags.push({ type: 'fix', msg: `Weekly Accomplishments looks like filler ("${weeklyWins.trim().substring(0, 60).replace(/\n/g,' ')}...") — should reflect actual work done` });
+
+  if (mk.has('changes'))
+    flags.push({ type: 'fix', msg: 'Changes section blank — CSDM to complete' });
+  if (mk.has('upcoming'))
+    flags.push({ type: 'fix', msg: 'Upcoming Milestones blank — CSDM to complete' });
+  if (mk.has('nextFocus'))
+    flags.push({ type: 'fix', msg: "Next Week's Focus blank — CSDM to complete" });
+  if (mk.has('within9mo'))
+    flags.push({ type: 'fix', msg: 'Within 9 Months of Contract End? not answered — required field' });
+  if (mk.has('interruptions'))
+    flags.push({ type: 'fix', msg: 'Service interruptions count not documented' });
+  if (mk.has('sla'))
+    flags.push({ type: 'fix', msg: 'SLA not documented' });
+
+  if (nextVersion && isPlaceholder(nextVersion))
+    flags.push({ type: 'fix', msg: 'Next Version/Decommission Plan still contains template placeholder text' });
+  if (currentVersions && isPlaceholder(currentVersions))
+    flags.push({ type: 'fix', msg: 'Current Versions contains placeholder text — CSDM to fill in actual versions' });
+  if (isWithin9 && renewalFeedback && isPlaceholder(renewalFeedback))
+    flags.push({ type: 'fix', msg: 'Renewal feedback is "TBD" — needs real customer sentiment documented' });
+  if (isWithin9 && renewalNextSteps && isPlaceholder(renewalNextSteps))
+    flags.push({ type: 'fix', msg: 'Renewal next steps is "TBD" — needs actionable steps documented' });
+
+  // Remaining blank fields grouped
+  const otherMissing = missing.filter(m =>
+    !['weeklyWins','changes','upcoming','nextFocus','within9mo','interruptions','sla'].includes(m.key));
+  if (otherMissing.length)
+    flags.push({ type: 'fix', msg: `Also blank: ${otherMissing.map(m => m.label).join(', ')}` });
 
   return flags;
 }
@@ -570,12 +650,19 @@ function generateExport(owner, accounts, notes, today) {
     t += `Owner: ${a.owner}  |  Sentiment: ${a.sentiment}  |  Operations: ${a.operations}  |  Updated: ${weekdayName(a.updated)} ${formatDate(a.updated)}\n`;
     t += `${'═'.repeat(60)}\n`;
 
-    // Manager flags first
-    if (flags.length > 0) {
-      t += `\nMANAGER FLAGS:\n`;
-      flags.forEach(f => t += `  ${f.type==='alert'?'⚑':f.type==='warn'?'△':'ℹ'} ${f.msg}\n`);
+    // Manager flags split into discussion topics and quality fixes
+    const discuss = flags.filter(f => f.type === 'alert' || f.type === 'warn' || f.type === 'info');
+    const fixes   = flags.filter(f => f.type === 'fix');
+
+    if (discuss.length > 0) {
+      t += `\nDISCUSSION TOPICS:\n`;
+      discuss.forEach(f => t += `  ${f.type==='alert'?'⚑':f.type==='warn'?'△':'ℹ'} ${f.msg}\n`);
     } else {
-      t += `\nMANAGER FLAGS: ✓ None\n`;
+      t += `\nDISCUSSION TOPICS: ✓ None\n`;
+    }
+    if (fixes.length > 0) {
+      t += `\nCSDM TO FIX IN NEXT UPDATE:\n`;
+      fixes.forEach(f => t += `  ✎ ${f.msg}\n`);
     }
     const note = notes[a.lob];
     if (note) t += `\n📝 MY NOTE: ${note.text}\n`;
@@ -634,14 +721,32 @@ function Field({ label, value, isLink }) {
 
 function AnalysisFlags({ flags }) {
   if (!flags.length) return <p className="no-flags">✓ No issues flagged</p>;
+  const discuss = flags.filter(f => f.type === 'alert' || f.type === 'warn' || f.type === 'info');
+  const fixes   = flags.filter(f => f.type === 'fix');
   return (
     <div>
-      {flags.map((f, i) => (
-        <div key={i} className={`analysis-flag ${f.type}`}>
-          <span className="analysis-flag-icon">{f.type==='alert'?'⚑':f.type==='warn'?'△':'ℹ'}</span>
-          <span>{f.msg}</span>
-        </div>
-      ))}
+      {discuss.length > 0 && (
+        <>
+          <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>Discussion Topics</div>
+          {discuss.map((f, i) => (
+            <div key={i} className={`analysis-flag ${f.type}`}>
+              <span className="analysis-flag-icon">{f.type==='alert'?'⚑':f.type==='warn'?'△':'ℹ'}</span>
+              <span>{f.msg}</span>
+            </div>
+          ))}
+        </>
+      )}
+      {fixes.length > 0 && (
+        <>
+          <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginTop: discuss.length ? '0.5rem' : 0, marginBottom:'0.3rem'}}>CSDM to Fix</div>
+          {fixes.map((f, i) => (
+            <div key={i} className="analysis-flag fix">
+              <span className="analysis-flag-icon">✎</span>
+              <span>{f.msg}</span>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   );
 }
