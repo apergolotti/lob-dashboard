@@ -1042,7 +1042,16 @@ function MondayView({ data, notes }) {
             ? <div className="monday-empty" style={{color:'var(--green)'}}>✓ No major issues flagged</div>
             : actionItems.map(({row, sections, flags, allFlags: af}) => (
               <div key={row.lob} className="monday-row">
-                <StatusBadge status={row.sentiment} />
+                <div style={{display:'flex', flexDirection:'column', gap:'3px', flexShrink:0}}>
+                  <div style={{display:'flex', alignItems:'center', gap:'4px'}}>
+                    <span style={{fontSize:'0.62rem', color:'var(--text3)', fontFamily:'var(--mono)', width:'26px'}}>SENT</span>
+                    <StatusBadge status={row.sentiment} />
+                  </div>
+                  <div style={{display:'flex', alignItems:'center', gap:'4px'}}>
+                    <span style={{fontSize:'0.62rem', color:'var(--text3)', fontFamily:'var(--mono)', width:'26px'}}>OPS</span>
+                    <StatusBadge status={row.operations} />
+                  </div>
+                </div>
                 <div className="monday-row-main">
                   <div className="monday-row-customer">{row.customer} <span style={{fontSize:'0.72rem', color:'var(--text3)'}}>{row.owner}</span></div>
                   {sections.issues && <div className="monday-row-sub" style={{color:'var(--yellow)'}}>{sections.issues.substring(0,120)}{sections.issues.length>120?'…':''}</div>}
