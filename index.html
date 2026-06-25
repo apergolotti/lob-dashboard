@@ -305,16 +305,44 @@ function formatDate(val) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 }
 
+function isWithin6Months(val) {
+  const d = parseDate(val);
+  if (!d) return false;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end   = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const cutoff = new Date(today);
+  cutoff.setMonth(cutoff.getMonth() + 6);
+  return end >= today && end <= cutoff;
+}
+
+function isContractExpired(val) {
+  const d = parseDate(val);
+  if (!d) return false;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()) < today;
+}
+
+function daysUntilContract(val) {
+  const d = parseDate(val);
+  if (!d) return null;
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  return Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - today) / 86400000);
+}
+
 function normalizeRow(r) {
   return {
-    lob:       (r['u_lob.u_lob_details'] || r['u_lob'] || '').trim(),
-    customer:  (r['u_customer_relationship.u_customer_account'] || r['u_lob.u_customer_account'] || '').trim(),
-    owner:     (r['u_project_owner'] || '').trim(),
-    sentiment: (r['u_status_overall'] || 'Green').trim(),
-    operations:(r['u_status_operations'] || 'Green').trim(),
-    updated:   (r['sys_updated_on'] || r['sys_updated'] || '').trim(),
-    status:    (r['u_lob_status'] || '').replace(/\r\n?/g, '\n').trim(),
-    description:(r['u_project_description'] || '').trim(),
+    lob:         (r['u_lob.u_lob_details'] || r['u_lob'] || '').trim(),
+    customer:    (r['u_customer_relationship.u_customer_account'] || r['u_lob.u_customer_account'] || '').trim(),
+    owner:       (r['u_project_owner'] || '').trim(),
+    sentiment:   (r['u_status_overall'] || 'Green').trim(),
+    operations:  (r['u_status_operations'] || 'Green').trim(),
+    updated:     (r['sys_updated_on'] || r['sys_updated'] || '').trim(),
+    contractEnd: (r['u_customer_relationship.u_contract_end'] || '').trim(),
+    status:      (r['u_lob_status'] || '').replace(/\r\n?/g, '\n').trim(),
+    description: (r['u_project_description'] || '').trim(),
   };
 }
 
@@ -557,6 +585,12 @@ function analyzeAccount(row, sections) {
       flags.push({ type: 'warn', msg: `SLA at ${sections.sla} — below 99% threshold, discuss impact with CSDM` });
   }
 
+  // ── Contract end date ─────────────────────────────────────────────────────
+  if (isContractExpired(row.contractEnd))
+    flags.push({ type: 'alert', msg: `Contract expired ${formatDate(row.contractEnd)} (${Math.abs(daysUntilContract(row.contractEnd))}d ago) — action required` });
+  else if (isWithin6Months(row.contractEnd))
+    flags.push({ type: 'warn', msg: `Contract ends ${formatDate(row.contractEnd)} (${daysUntilContract(row.contractEnd)}d) — confirm renewal status` });
+
   // ── Renewal ───────────────────────────────────────────────────────────────
   const isWithin9 = within9mo && within9mo.toLowerCase().includes('yes');
   const fbLow = (renewalFeedback || '').toLowerCase();
@@ -647,7 +681,9 @@ function generateExport(owner, accounts, notes, today) {
     const flags = analyzeAccount(a, s);
     t += `\n${'═'.repeat(60)}\n`;
     t += `${i+1}. ${a.customer}  [${a.lob}]\n`;
-    t += `Owner: ${a.owner}  |  Sentiment: ${a.sentiment}  |  Operations: ${a.operations}  |  Updated: ${weekdayName(a.updated)} ${formatDate(a.updated)}\n`;
+    t += `Owner: ${a.owner}  |  Sentiment: ${a.sentiment}  |  Operations: ${a.operations}  |  Updated: ${weekdayName(a.updated)} ${formatDate(a.updated)}`;
+    if (a.contractEnd) t += `  |  Contract End: ${formatDate(a.contractEnd)}${isWithin6Months(a.contractEnd) ? ' ⚑ ≤6mo' : isContractExpired(a.contractEnd) ? ' ⚑ EXPIRED' : ''}`;
+    t += `\n`;
     t += `${'═'.repeat(60)}\n`;
 
     // Manager flags split into discussion topics and quality fixes
@@ -703,6 +739,18 @@ function DateBadge({ val }) {
   const cls = stale ? 'date-stale' : 'date-fresh';
   const label = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days}d ago`;
   return <span className={`date-badge ${cls}`}>{label}</span>;
+}
+
+function ContractEndBadge({ val }) {
+  if (!val) return <span style={{color:'var(--text3)', fontSize:'0.78rem'}}>—</span>;
+  const days = daysUntilContract(val);
+  if (days === null) return <span style={{color:'var(--text3)', fontSize:'0.78rem'}}>—</span>;
+  const expired = days < 0;
+  const soon    = !expired && isWithin6Months(val);
+  const label   = expired ? `Exp ${Math.abs(days)}d ago` : days === 0 ? 'Expires today' : `${days}d left`;
+  if (expired) return <span className="date-badge date-stale">{label}</span>;
+  if (soon)    return <span className="date-badge date-warn">{label}</span>;
+  return <span style={{fontSize:'0.78rem', color:'var(--text2)'}}>{label}</span>;
 }
 
 function Field({ label, value, isLink }) {
@@ -850,6 +898,9 @@ function ExpandedRow({ row, notes }) {
         <FieldBox label="Next Version or Decommission Plan (version, date, contract needs)" value={s.nextVersion} missing={miss('nextVersion')} wide />
 
         <div className="group-label">Renewal Status</div>
+        <FieldBox label="Contract End Date" value={row.contractEnd ? formatDate(row.contractEnd) : null}
+          missing={!row.contractEnd}
+          isIssue={isWithin6Months(row.contractEnd) || isContractExpired(row.contractEnd)} />
         <FieldBox label="Within 9 Months of Contract End?" value={s.within9mo} missing={miss('within9mo')} />
         <FieldBox label="Customer Feedback (renewing / at risk / non-renewal)" value={s.renewalFeedback} missing={miss('renewalFeedback')} wide />
         <FieldBox label="Next Steps" value={s.renewalNextSteps} missing={miss('renewalNextSteps')} />
@@ -890,6 +941,7 @@ function TableView({ data, notes }) {
     issues: allSections.filter(s => s.issues).length,
     stale: data.filter(d => isStale(d.updated)).length,
     alerts: allFlags.filter(f => f.some(x => x.type === 'alert')).length,
+    endingSoon: data.filter(d => isWithin6Months(d.contractEnd)).length,
   }), [data, allSections, allFlags]);
 
   const filtered = useMemo(() => {
@@ -903,6 +955,7 @@ function TableView({ data, notes }) {
       else if (filterStatus === 'issues') matchStatus = !!allSections[i].issues;
       else if (filterStatus === 'alerts') matchStatus = allFlags[i].some(f => f.type === 'alert');
       else if (filterStatus === 'renewal') matchStatus = allSections[i].within9mo?.toLowerCase().includes('yes');
+      else if (filterStatus === 'endingSoon') matchStatus = isWithin6Months(row.contractEnd);
       return matchSearch && matchOwner && matchSentiment && matchStatus;
     });
 
@@ -911,6 +964,9 @@ function TableView({ data, notes }) {
       if (sortBy === 'updated') {
         av = parseDate(a.updated)?.getTime() || 0;
         bv = parseDate(b.updated)?.getTime() || 0;
+      } else if (sortBy === 'contractEnd') {
+        av = parseDate(a.contractEnd)?.getTime() || 9999999999999;
+        bv = parseDate(b.contractEnd)?.getTime() || 9999999999999;
       } else if (sortBy === 'customer') { av = a.customer.toLowerCase(); bv = b.customer.toLowerCase(); }
       else if (sortBy === 'owner') { av = a.owner.toLowerCase(); bv = b.owner.toLowerCase(); }
       else if (sortBy === 'sentiment') {
@@ -969,6 +1025,11 @@ function TableView({ data, notes }) {
           <div className="stat-label">Flagged</div>
           <div className="stat-value">{stats.alerts}</div>
         </div>
+        {stats.endingSoon > 0 && <div className={`stat-card yellow ${filterStatus==='endingSoon'?'active':''}`}
+          onClick={() => setFilterStatus(filterStatus==='endingSoon'?'all':'endingSoon')}>
+          <div className="stat-label">≤6mo End</div>
+          <div className="stat-value">{stats.endingSoon}</div>
+        </div>}
       </div>
 
       <div className="filter-bar">
@@ -989,6 +1050,7 @@ function TableView({ data, notes }) {
           <option value="issues">Has Issues</option>
           <option value="alerts">Manager Flags</option>
           <option value="renewal">Renewal ≤9mo</option>
+          <option value="endingSoon">Contract ≤6mo</option>
         </select>
         {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setFilterSentiment('all'); setFilterStatus('all'); }}>× Clear</span>}
       </div>
@@ -1002,6 +1064,7 @@ function TableView({ data, notes }) {
               <th><button onClick={() => toggleSort('sentiment')}>Sentiment{sortIcon('sentiment')}</button></th>
               <th>Operations</th>
               <th><button onClick={() => toggleSort('updated')}>Updated{sortIcon('updated')}</button></th>
+              <th><button onClick={() => toggleSort('contractEnd')}>Contract End{sortIcon('contractEnd')}</button></th>
               <th>Flags</th>
               <th></th>
             </tr>
@@ -1031,6 +1094,12 @@ function TableView({ data, notes }) {
                       {row.updated && <DateBadge val={row.updated} />}
                     </td>
                     <td>
+                      {row.contractEnd
+                        ? <><div style={{fontSize:'0.78rem', color: isWithin6Months(row.contractEnd)||isContractExpired(row.contractEnd) ? 'var(--yellow)' : 'var(--text2)', marginBottom:'3px', fontWeight: isWithin6Months(row.contractEnd)||isContractExpired(row.contractEnd) ? 500 : 400}}>{formatDate(row.contractEnd)}</div>
+                           <ContractEndBadge val={row.contractEnd} /></>
+                        : <span style={{color:'var(--text3)', fontSize:'0.78rem'}}>—</span>}
+                    </td>
+                    <td>
                       <div className="flags">
                         {sections.issues && <span className="flag flag-issue">Issues</span>}
                         {sections.within9mo?.toLowerCase().includes('yes') && <span className="flag flag-renewal">≤9mo</span>}
@@ -1044,7 +1113,7 @@ function TableView({ data, notes }) {
                   </tr>
                   {isExpanded && (
                     <tr className="expand-row">
-                      <td colSpan={7}>
+                      <td colSpan={8}>
                         <ExpandedRow row={row} notes={notes} />
                       </td>
                     </tr>
@@ -1099,6 +1168,13 @@ function MondayView({ data, notes }) {
   const renewalItems = useMemo(() => {
     return data.filter((_,i) => allSections[i].within9mo?.toLowerCase().includes('yes'))
       .map((r,_) => ({ row: r, sections: allSections[data.indexOf(r)] }));
+  }, [data, allSections]);
+
+  const contractEndingSoon = useMemo(() => {
+    return data
+      .filter(r => isWithin6Months(r.contractEnd) || isContractExpired(r.contractEnd))
+      .map(r => ({ row: r, sections: allSections[data.indexOf(r)], days: daysUntilContract(r.contractEnd) }))
+      .sort((a, b) => (daysUntilContract(a.row.contractEnd) ?? 999) - (daysUntilContract(b.row.contractEnd) ?? 999));
   }, [data, allSections]);
 
   return (
@@ -1172,18 +1248,55 @@ function MondayView({ data, notes }) {
           }
         </div>
 
-        {/* Renewals */}
+        {/* Contracts ending within 6 months */}
+        {contractEndingSoon.length > 0 && (
+          <div className="monday-section" style={{gridColumn: contractEndingSoon.length > 3 ? '1/-1' : 'auto'}}>
+            <div className="monday-section-header">
+              <span className="monday-section-title" style={{color:'var(--orange)'}}>📅 Contract End ≤ 6 Months</span>
+              <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)'}}>{contractEndingSoon.length} accounts</span>
+            </div>
+            {contractEndingSoon.map(({row, sections, days}) => {
+              const expired = days !== null && days < 0;
+              return (
+                <div key={row.lob} className="monday-row">
+                  <div style={{display:'flex', flexDirection:'column', gap:'3px', flexShrink:0, alignItems:'center'}}>
+                    <StatusBadge status={row.sentiment} />
+                    <ContractEndBadge val={row.contractEnd} />
+                  </div>
+                  <div className="monday-row-main">
+                    <div className="monday-row-customer">
+                      {row.customer}
+                      <span style={{fontSize:'0.72rem', color:'var(--text3)', marginLeft:'0.4rem'}}>{row.owner}</span>
+                    </div>
+                    <div className="monday-row-meta" style={{color: expired ? 'var(--red)' : 'var(--yellow)'}}>
+                      {expired ? '⚑ Contract expired ' : '⏳ Ends '}{formatDate(row.contractEnd)}
+                      {!expired && ` — ${days}d remaining`}
+                    </div>
+                    {sections.renewalFeedback && <div className="monday-row-sub">{sections.renewalFeedback.substring(0,100)}</div>}
+                    {sections.renewalNextSteps && <div className="monday-row-meta" style={{color:'var(--blue)'}}>Next: {sections.renewalNextSteps.substring(0,100)}</div>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* CSDM-flagged renewals (within9mo = yes in status) */}
         {renewalItems.length > 0 && (
           <div className="monday-section" style={{gridColumn: renewalItems.length > 3 ? '1/-1' : 'auto'}}>
             <div className="monday-section-header">
-              <span className="monday-section-title" style={{color:'var(--orange)'}}>⚑ Renewal ≤ 9 Months</span>
+              <span className="monday-section-title" style={{color:'var(--orange)'}}>⚑ CSDM-Flagged Renewal ≤ 9 Months</span>
               <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)'}}>{renewalItems.length} accounts</span>
             </div>
             {renewalItems.map(({row, sections}) => (
               <div key={row.lob} className="monday-row">
-                <StatusBadge status={row.sentiment} />
+                <div style={{display:'flex', flexDirection:'column', gap:'3px', flexShrink:0, alignItems:'center'}}>
+                  <StatusBadge status={row.sentiment} />
+                  {row.contractEnd && <ContractEndBadge val={row.contractEnd} />}
+                </div>
                 <div className="monday-row-main">
                   <div className="monday-row-customer">{row.customer} <span style={{fontSize:'0.72rem', color:'var(--text3)'}}>{row.owner}</span></div>
+                  {row.contractEnd && <div className="monday-row-meta" style={{color:'var(--text2)'}}>Contract end: {formatDate(row.contractEnd)}</div>}
                   {sections.renewalFeedback && <div className="monday-row-sub">{sections.renewalFeedback.substring(0,100)}</div>}
                   {sections.renewalNextSteps && <div className="monday-row-meta" style={{color:'var(--blue)'}}>Next: {sections.renewalNextSteps.substring(0,100)}</div>}
                 </div>
