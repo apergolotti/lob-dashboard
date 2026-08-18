@@ -238,6 +238,7 @@
     .analysis-flag.alert { background: var(--red-bg); border: 1px solid var(--red-border); color: var(--red); }
     .analysis-flag.info { background: var(--blue-bg); border: 1px solid var(--blue-border); color: var(--blue); }
     .analysis-flag.fix { background: #fdf2e8; border: 1px solid #f0d0a8; color: var(--orange); }
+    .analysis-flag.template { background: #f3eefc; border: 1px solid #ddccf5; color: var(--purple); }
 
     /* Portfolio matrix */
     .matrix-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; }
@@ -491,22 +492,36 @@ function parseStatus(status) {
   const life   = sect(t, /Lifecycle Planning/i, /\n\s*Renewal/i);
   const renew  = sect(t, /Renewal\s+Status/i);
 
+  // "Next Week's Focus" is written many ways: with/without the apostrophe,
+  // "Next Weeks Focus", or just "Next Weeks:" (Key Davis). One marker matches
+  // them all so blocks terminate correctly and the field is captured.
+  const NEXT_FOCUS = /\n\s*Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i;
   return {
-    // CSDM-entered date at the top of the template ("Date: 7/30/2026")
-    reportedDate: f1(t, /^\s*Date\s*:[ \t]*([^\n]+)/i),
+    // CSDM-entered date at the top of the update. Handles "Date:", "Updated
+    // Date:", "Update Date:", "Date -", "Updated 8/13/2026", and a bare date on
+    // the first line — all formats seen across the team's exports.
+    reportedDate: (() => {
+      const m = t.match(/^\s*(?:Update[d]?\s+)?Date\s*[:\-]\s*([^\n]+)/i);
+      if (m) return clean(m[1]);
+      const u = t.match(/^\s*Updated\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
+      if (u) return clean(u[1]);
+      const b = t.match(/^\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/);
+      if (b) return clean(b[1]);
+      return null;
+    })(),
     // Weekly update
-    weeklyWins: blk(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]),
-    issues:     (() => { const v = blk(weekly, /Issues\s*\/?\s*(?:Concerns?|Risks?)?\s*:/i, [/\n\s*Changes\s*:/i, /\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]); return isNoIssues(v) ? null : v; })(),
-    changes:    blk(weekly, /\n\s*Changes\s*:/i, [/\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]),
-    upcoming:   blk(weekly, /Upcoming Milestones?\s*:/i, [/\n\s*Next Week['\u2019]?s? Focus/i]),
-    nextFocus:  blk(weekly, /Next Week['\u2019]?s? Focus\s*:/i, []),
+    weeklyWins: blk(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, NEXT_FOCUS]),
+    issues:     (() => { const v = blk(weekly, /Issues\s*\/?\s*(?:Concerns?|Risks?)?\s*:/i, [/\n\s*Changes\s*:/i, /\n\s*Upcoming/i, NEXT_FOCUS]); return isNoIssues(v) ? null : v; })(),
+    changes:    blk(weekly, /\n\s*Changes\s*:/i, [/\n\s*Upcoming/i, NEXT_FOCUS]),
+    upcoming:   blk(weekly, /Upcoming Milestones?\s*:/i, [NEXT_FOCUS]),
+    nextFocus:  blk(weekly, /Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i, []),
     // Service Health Reviews
     frequency:  f1(shr, /Frequency of service health reviews?\s*:[ \t]*([^\n]*)/i),
     completed:  f1(shr, /Completed this period\s*\??\s*:?[ \t]*([^\n]*)/i),
     participation: blk(shr, /Customer Participation\s*:/i, [/\n\s*Link\s*:/i]),
     shrLink:    linkField(shr, /\n\s*Link\s*:/i),
     // Customer Health
-    sla:        f1(health, /SLA\s*:[ \t]*([^\n]*)/i),
+    sla:        f1(health, /(?:Contractual\s+)?SLA\s*:[ \t]*([^\n]*)/i),
     interruptions: f1(health, /interruptions?[^:\n]*:[ \t]*([^\n]*)/i),
     meetingNotesLink: f1(health, /Weekly meeting notes link\s*:[ \t]*([^\n]*)/i),
     // Profitability
@@ -562,18 +577,19 @@ function computeMissing(status) {
     return present(rawLine(section, labelRe));
   };
 
+  const NEXT_FOCUS = /\n\s*Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i;
   const within9 = /yes/i.test(rawLine(renew, /Within 9 months? of contract end\s*\??\s*:?/i) || '');
 
   const checks = [
-    ['weeklyWins', 'Weekly Accomplishments', present(rawBlock(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]))],
-    ['changes', 'Changes', present(rawBlock(weekly, /\n\s*Changes\s*:/i, [/\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]))],
-    ['upcoming', 'Upcoming Milestones', present(rawBlock(weekly, /Upcoming Milestones?\s*:/i, [/\n\s*Next Week['\u2019]?s? Focus/i]))],
-    ['nextFocus', "Next Week's Focus", present(rawBlock(weekly, /Next Week['\u2019]?s? Focus\s*:/i, []))],
+    ['weeklyWins', 'Weekly Accomplishments', present(rawBlock(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, NEXT_FOCUS]))],
+    ['changes', 'Changes', present(rawBlock(weekly, /\n\s*Changes\s*:/i, [/\n\s*Upcoming/i, NEXT_FOCUS]))],
+    ['upcoming', 'Upcoming Milestones', present(rawBlock(weekly, /Upcoming Milestones?\s*:/i, [NEXT_FOCUS]))],
+    ['nextFocus', "Next Week's Focus", present(rawBlock(weekly, /Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i, []))],
     ['frequency', 'SHR Frequency', present(rawLine(shr, /Frequency of service health reviews?\s*:/i))],
     ['completed', 'SHR Completed This Period', present(rawLine(shr, /Completed this period\s*\??\s*:?/i))],
     ['participation', 'Customer Participation', present(rawBlock(shr, /Customer Participation\s*:/i, [/\n\s*Link\s*:/i]))],
     ['shrLink', 'SHR Link', hasLink(shr, /\n\s*Link\s*:/i)],
-    ['sla', 'SLA', present(rawLine(health, /SLA\s*:/i))],
+    ['sla', 'SLA', present(rawLine(health, /(?:Contractual\s+)?SLA\s*:/i))],
     ['interruptions', 'Service Interruptions (3mo)', present(rawLine(health, /interruptions?[^:\n]*:/i))],
     ['meetingNotesLink', 'Weekly Meeting Notes Link', present(rawLine(health, /Weekly meeting notes link\s*:/i))],
     ['profitabilityLink', 'Profitability Link', hasLink(profit, /Link\s*:/i)],
@@ -589,9 +605,76 @@ function computeMissing(status) {
   return checks.filter(([, , ok]) => !ok).map(([key, label]) => ({ key, label }));
 }
 
+// Intentional pointer / non-tracked records that shouldn't be judged on the
+// template: MPD and MPT both just say "SEE MPM", and anything explicitly
+// marked "IGNORE LOB" (e.g. ALV, tracked in PPM). These are excluded from
+// template compliance and the leaderboard.
+function isPointerLob(row) {
+  if (!row) return false;
+  const s = (row.status || '');
+  if (/\bsee\s+mpm\b/i.test(s)) return true;
+  if (/ignore\s+lob/i.test(s) || /ignore\s+lob/i.test(row.description || '')) return true;
+  if (/tracked in ppm/i.test(row.description || '') && s.trim().length < 120) return true;
+  return false;
+}
+
+// Checks a status update against the standard LOB template and returns the
+// ways it deviates, as {sev, msg}. 'major' = a required heading/section is
+// missing entirely; 'minor' = a non-standard label was used in its place.
+// This is about FORMAT (did they follow the template?), separate from
+// computeMissing which is about CONTENT (did they fill a field in?).
+function checkTemplate(status, row) {
+  // Skip intentional pointer/ignore records entirely.
+  if (isPointerLob(row || { status })) return [];
+  if (!status || status.trim().length < 20)
+    return [{ sev: 'major', msg: 'No content to check against the template' }];
+  const t = status;
+  const d = [];
+
+  // Weekly update headings
+  if (!/Weekly\s+Accomplishments\s*:/i.test(t)) {
+    if (/Weekly\s+Wins\s*:/i.test(t))
+      d.push({ sev: 'minor', msg: 'Uses "Weekly Wins" — the template label is "Weekly Accomplishments"' });
+    else
+      d.push({ sev: 'major', msg: 'Missing the "Weekly Accomplishments:" heading' });
+  }
+  if (!/Issues\s*\/\s*Concerns\s*:/i.test(t)) {
+    if (/Issues\s*\/\s*Risks\s*:/i.test(t))
+      d.push({ sev: 'minor', msg: 'Uses "Issues/Risks" — the template label is "Issues/Concerns"' });
+    else if (/\bIssues\b/i.test(t))
+      d.push({ sev: 'minor', msg: '"Issues/Concerns:" heading is worded differently than the template' });
+    else
+      d.push({ sev: 'major', msg: 'Missing the "Issues/Concerns:" heading' });
+  }
+  if (!/\bChanges\s*:/i.test(t))              d.push({ sev: 'minor', msg: 'Missing the "Changes:" line' });
+  if (!/Upcoming\s+Milestones?\s*:/i.test(t)) d.push({ sev: 'minor', msg: 'Missing the "Upcoming Milestones:" line' });
+  if (!/Next\s+Week['\u2019]?s\s+Focus\s*:/i.test(t)) {
+    if (/Next\s+Weeks?\b/i.test(t))
+      d.push({ sev: 'minor', msg: 'Uses "Next Weeks"/"Next Weeks Focus" — the template label is "Next Week\u2019s Focus"' });
+    else
+      d.push({ sev: 'major', msg: 'Missing the "Next Week\u2019s Focus:" line' });
+  }
+
+  // Standing section headers
+  if (!/Service\s+Health\s+Reviews/i.test(t)) d.push({ sev: 'major', msg: 'Missing the "Service Health Reviews" section' });
+  if (!/Customer\s+Health/i.test(t))          d.push({ sev: 'major', msg: 'Missing the "Customer Health" section' });
+  if (!/Profitability/i.test(t))               d.push({ sev: 'major', msg: 'Missing the "Profitability" section' });
+  if (!/Lifecycle\s+Planning/i.test(t))       d.push({ sev: 'major', msg: 'Missing the "Lifecycle Planning" section' });
+  if (!/Renewal\s+Status/i.test(t))           d.push({ sev: 'major', msg: 'Missing the "Renewal Status" section' });
+
+  // Field-label variants inside sections
+  if (/Customer\s+Health/i.test(t) && !/(^|\n)\s*SLA\s*:/i.test(t) && /Contractual\s+SLA\s*:/i.test(t))
+    d.push({ sev: 'minor', msg: 'Uses "Contractual SLA" — the template label is just "SLA"' });
+  if (!/-{5,}/.test(t))
+    d.push({ sev: 'minor', msg: 'Missing the dashed divider between the weekly update and the standing sections' });
+
+  return d;
+}
+
 // Analyze an account and return flagged observations.
 // Types: 'alert' (urgent/risk), 'warn' (discussion topic), 'info' (FYI),
-//        'fix' (CSDM needs to correct their update)
+//        'fix' (CSDM needs to correct their update),
+//        'template' (CSDM is not following the standard template)
 function analyzeAccount(row, sections) {
   const flags = [];
   const days = daysAgo(row.updated);
@@ -704,6 +787,10 @@ function analyzeAccount(row, sections) {
     !['weeklyWins','changes','upcoming','nextFocus','within9mo','interruptions','sla'].includes(m.key));
   if (otherMissing.length)
     flags.push({ type: 'fix', msg: `Also blank: ${otherMissing.map(m => m.label).join(', ')}` });
+
+  // Template compliance (CSDM not following the standard format)
+  checkTemplate(row.status, row).forEach(dev =>
+    flags.push({ type: 'template', sev: dev.sev, msg: dev.msg }));
 
   return flags;
 }
@@ -911,6 +998,8 @@ function generateExport(owner, accounts, notes, today) {
   const y = accounts.filter(a=>a.sentiment==='Yellow').length;
   const r = accounts.filter(a=>a.sentiment==='Red').length;
   t += `Sentiment:  ${g} Green  /  ${y} Yellow  /  ${r} Red\n`;
+  const offTmpl = accounts.filter(a => checkTemplate(a.status, a).length > 0).length;
+  if (offTmpl > 0) t += `Template:   ${offTmpl} of ${accounts.length} account${accounts.length!==1?'s':''} off the standard format\n`;
   t += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
   // Portfolio scorecard across the owner's accounts
@@ -994,6 +1083,11 @@ function generateExport(owner, accounts, notes, today) {
       t += `\nCSDM TO FIX IN NEXT UPDATE:\n`;
       fixes.forEach(f => t += `  ✎ ${f.msg}\n`);
     }
+    const tmpl = flags.filter(f => f.type === 'template');
+    if (tmpl.length > 0) {
+      t += `\nNOT FOLLOWING THE TEMPLATE:\n`;
+      tmpl.forEach(f => t += `  ▤ ${f.sev === 'major' ? '(!) ' : ''}${f.msg}\n`);
+    }
     const note = notes[a.lob];
     if (note) t += `\n📝 MY NOTE: ${note.text}\n`;
 
@@ -1053,6 +1147,7 @@ function AnalysisFlags({ flags }) {
   if (!flags.length) return <p className="no-flags">✓ No issues flagged</p>;
   const discuss = flags.filter(f => f.type === 'alert' || f.type === 'warn' || f.type === 'info');
   const fixes   = flags.filter(f => f.type === 'fix');
+  const template = flags.filter(f => f.type === 'template');
   return (
     <div>
       {discuss.length > 0 && (
@@ -1073,6 +1168,17 @@ function AnalysisFlags({ flags }) {
             <div key={i} className="analysis-flag fix">
               <span className="analysis-flag-icon">✎</span>
               <span>{f.msg}</span>
+            </div>
+          ))}
+        </>
+      )}
+      {template.length > 0 && (
+        <>
+          <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginTop: (discuss.length || fixes.length) ? '0.5rem' : 0, marginBottom:'0.3rem'}}>Not Following the Template</div>
+          {template.map((f, i) => (
+            <div key={i} className="analysis-flag template">
+              <span className="analysis-flag-icon">▤</span>
+              <span>{f.sev === 'major' ? <strong>{f.msg}</strong> : f.msg}</span>
             </div>
           ))}
         </>
@@ -1526,6 +1632,155 @@ function talkingPoints(row, s, domains, flags) {
   return pts;
 }
 
+// ── Compliance leaderboard ─────────────────────────────────────────────────
+// Ranks each CSDM by how consistently their updates follow the standard
+// template. A "compliant" account has zero template deviations. Pointer /
+// ignored records (MPD, MPT, anything "SEE MPM" or "IGNORE LOB") are excluded
+// from the counts so they don't unfairly penalize an owner.
+function ComplianceView({ data }) {
+  const stats = useMemo(() => {
+    const byOwner = {};
+    data.forEach(row => {
+      if (isPointerLob(row)) return; // excluded from scoring
+      const owner = row.owner || 'Unassigned';
+      const devs = checkTemplate(row.status, row);
+      if (!byOwner[owner]) byOwner[owner] = { owner, total: 0, compliant: 0, major: 0, minor: 0, tally: new Map(), accounts: [] };
+      const o = byOwner[owner];
+      o.total++;
+      if (devs.length === 0) o.compliant++;
+      devs.forEach(dv => {
+        if (dv.sev === 'major') o.major++; else o.minor++;
+        if (!o.tally.has(dv.msg)) o.tally.set(dv.msg, { sev: dv.sev, n: 0 });
+        o.tally.get(dv.msg).n++;
+      });
+      o.accounts.push({ lob: row.lob, customer: row.customer, devs });
+    });
+    return Object.values(byOwner).map(o => ({
+      ...o,
+      pct: o.total ? Math.round((o.compliant / o.total) * 100) : 100,
+    })).sort((a, b) => b.pct - a.pct || a.major - b.major || a.owner.localeCompare(b.owner));
+  }, [data]);
+
+  const [openOwner, setOpenOwner] = useState(null);
+
+  const scored = data.filter(r => !isPointerLob(r));
+  const totalAcct = scored.length;
+  const totalCompliant = stats.reduce((n, o) => n + o.compliant, 0);
+  const teamPct = totalAcct ? Math.round((totalCompliant / totalAcct) * 100) : 100;
+  const excluded = data.length - scored.length;
+
+  const barColor = pct => pct >= 90 ? 'var(--green)' : pct >= 60 ? 'var(--yellow)' : 'var(--red)';
+  const medal = i => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : String(i + 1);
+
+  return (
+    <div>
+      <div className="stats-row">
+        <div className="stat-card" style={{cursor:'default'}}>
+          <div className="stat-label">Team Compliance</div>
+          <div className="stat-value" style={{color: barColor(teamPct)}}>{teamPct}%</div>
+        </div>
+        <div className="stat-card green" style={{cursor:'default'}}>
+          <div className="stat-label">Compliant</div><div className="stat-value">{totalCompliant}</div>
+        </div>
+        <div className="stat-card orange" style={{cursor:'default'}}>
+          <div className="stat-label">Off-Template</div><div className="stat-value">{totalAcct - totalCompliant}</div>
+        </div>
+        <div className="stat-card blue" style={{cursor:'default'}}>
+          <div className="stat-label">CSDMs</div><div className="stat-value">{stats.length}</div>
+        </div>
+        <div className="stat-card" style={{cursor:'default'}}>
+          <div className="stat-label">Excluded</div><div className="stat-value">{excluded}</div>
+        </div>
+      </div>
+
+      <div style={{marginBottom:'1rem', padding:'0.6rem 0.9rem', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'0.8rem', color:'var(--text2)'}}>
+        Ranked by share of accounts that fully follow the standard update template.
+        Bold items are <strong>major</strong> gaps (a missing heading or section); the rest are label wording.
+        {excluded > 0 && <span> {excluded} pointer/ignored record{excluded!==1?'s':''} (e.g. SEE MPM) excluded.</span>}
+      </div>
+
+      <div className="matrix-wrap">
+        <table className="matrix">
+          <thead>
+            <tr>
+              <th style={{width:'46px', textAlign:'center'}}>Rank</th>
+              <th className="acct-col">CSDM</th>
+              <th style={{minWidth:'200px'}}>Compliance</th>
+              <th style={{textAlign:'center'}}>Compliant</th>
+              <th style={{textAlign:'center'}}>Major</th>
+              <th style={{textAlign:'center'}}>Minor</th>
+              <th style={{width:'30px'}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {stats.map((o, i) => {
+              const open = openOwner === o.owner;
+              const items = [...o.tally.entries()].sort((a, b) =>
+                (a[1].sev === 'major' ? 0 : 1) - (b[1].sev === 'major' ? 0 : 1) || b[1].n - a[1].n);
+              return (
+                <React.Fragment key={o.owner}>
+                  <tr className={`acct${open?' open':''}`} onClick={() => setOpenOwner(open ? null : o.owner)}>
+                    <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize: i<3?'1.1rem':'0.85rem', color:'var(--text2)'}}>{medal(i)}</td>
+                    <td>
+                      <div className="customer-name">{o.owner}</div>
+                      <div className="lob-code">{o.total} account{o.total!==1?'s':''} scored</div>
+                    </td>
+                    <td>
+                      <div style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>
+                        <div style={{flex:1, height:'8px', borderRadius:'4px', background:'var(--surface3)', overflow:'hidden', minWidth:'90px'}}>
+                          <div style={{width: o.pct + '%', height:'100%', background: barColor(o.pct)}} />
+                        </div>
+                        <span style={{fontFamily:'var(--mono)', fontSize:'0.82rem', fontWeight:600, color: barColor(o.pct), minWidth:'40px', textAlign:'right'}}>{o.pct}%</span>
+                      </div>
+                    </td>
+                    <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize:'0.82rem', color:'var(--green)'}}>{o.compliant}/{o.total}</td>
+                    <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize:'0.82rem', color: o.major?'var(--red)':'var(--text3)'}}>{o.major || '—'}</td>
+                    <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize:'0.82rem', color: o.minor?'var(--yellow)':'var(--text3)'}}>{o.minor || '—'}</td>
+                    <td style={{color:'var(--text3)', fontSize:'0.75rem', textAlign:'center'}}>{open ? '▲' : '▼'}</td>
+                  </tr>
+                  {open && (
+                    <tr className="expand-row">
+                      <td colSpan={7}>
+                        <div style={{padding:'0.9rem 1.25rem'}}>
+                          {items.length === 0 ? (
+                            <div className="no-flags">✓ Every scored account follows the template — nothing to coach.</div>
+                          ) : (
+                            <>
+                              <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>Most common deviations</div>
+                              {items.map(([msg, meta], k) => (
+                                <div key={k} className="analysis-flag template" style={{marginBottom:'0.3rem'}}>
+                                  <span className="analysis-flag-icon">▤</span>
+                                  <span>{meta.sev === 'major' ? <strong>{msg}</strong> : msg} <span style={{color:'var(--text3)'}}>({meta.n} account{meta.n!==1?'s':''})</span></span>
+                                </div>
+                              ))}
+                              <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', margin:'0.7rem 0 0.4rem'}}>By account</div>
+                              <div style={{display:'flex', flexWrap:'wrap', gap:'0.4rem'}}>
+                                {o.accounts.slice().sort((a,b) => b.devs.length - a.devs.length).map(a => (
+                                  <span key={a.lob} className="pill" title={a.devs.map(d=>d.msg).join(' · ') || 'Follows the template'}
+                                    style={{background: a.devs.length ? 'var(--surface3)' : 'var(--green-bg)', borderColor: a.devs.length ? 'var(--border)' : 'var(--green-border)', color: a.devs.length ? 'var(--text2)' : 'var(--green)'}}>
+                                    {a.devs.length ? '▤' : '✓'} {a.customer} <span style={{opacity:0.7}}>{a.devs.length ? a.devs.length : ''}</span>
+                                  </span>
+                                ))}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        <div className="table-footer">
+          {stats.length} CSDMs · {totalAcct} accounts scored · {excluded} excluded · a compliant account has zero template deviations
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OneOnOneView({ data, notes }) {
   const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
   const [owner, setOwner] = useState(owners[0] || '');
@@ -1541,6 +1796,7 @@ function OneOnOneView({ data, notes }) {
   const totalPts = mine.reduce((n,x) => n + x.points.length, 0);
   const fixCount = mine.reduce((n,x) => n + x.flags.filter(f=>f.type==='fix').length, 0);
   const staleN = mine.filter(x => isStale(x.row.updated)).length;
+  const templateN = mine.filter(x => x.flags.some(f=>f.type==='template')).length;
   const quiet = mine.filter(x => x.points.length === 0);
 
   return (
@@ -1568,9 +1824,32 @@ function OneOnOneView({ data, notes }) {
           <div style={{display:'flex', gap:'0.5rem', fontSize:'0.72rem', fontFamily:'var(--mono)'}}>
             {staleN > 0 && <span style={{color:'var(--red)'}}>⏰ {staleN} off-cadence</span>}
             {fixCount > 0 && <span style={{color:'var(--orange)'}}>✎ {fixCount} update fixes</span>}
+            {templateN > 0 && <span style={{color:'var(--purple)'}}>▤ {templateN} off-template</span>}
           </div>
         </div>
       </div>
+
+      {templateN > 0 && (() => {
+        const seen = new Map();
+        mine.forEach(x => x.flags.filter(f => f.type === 'template').forEach(f => {
+          if (!seen.has(f.msg)) seen.set(f.msg, { sev: f.sev, n: 0 });
+          seen.get(f.msg).n++;
+        }));
+        const items = [...seen.entries()].sort((a, b) =>
+          (a[1].sev === 'major' ? 0 : 1) - (b[1].sev === 'major' ? 0 : 1) || b[1].n - a[1].n);
+        return (
+          <div style={{background:'#f3eefc', border:'1px solid #ddccf5', borderRadius:'8px', padding:'0.7rem 0.9rem', marginBottom:'1rem'}}>
+            <div style={{fontSize:'0.8rem', fontWeight:600, color:'var(--purple)', marginBottom:'0.4rem'}}>
+              ▤ Template coaching — {owner} is off the standard format on {templateN} of {mine.length} account{mine.length!==1?'s':''}
+            </div>
+            {items.map(([msg, meta], i) => (
+              <div key={i} style={{fontSize:'0.76rem', color:'var(--text2)', marginTop:'2px'}}>
+                • {meta.sev === 'major' ? <strong>{msg}</strong> : msg} <span style={{color:'var(--text3)'}}>({meta.n} account{meta.n!==1?'s':''})</span>
+              </div>
+            ))}
+          </div>
+        );
+      })()}
 
       {mine.map(x => {
         const open = openAcct === x.row.lob;
@@ -1613,6 +1892,14 @@ function OneOnOneView({ data, notes }) {
                     <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>Update quality — mention at the end</div>
                     {x.flags.filter(f=>f.type==='fix').map((f,i) => (
                       <div key={i} className="analysis-flag fix"><span className="analysis-flag-icon">✎</span><span>{f.msg}</span></div>
+                    ))}
+                  </div>
+                )}
+                {x.flags.filter(f=>f.type==='template').length > 0 && (
+                  <div style={{marginTop:'0.6rem'}}>
+                    <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>Not following the template</div>
+                    {x.flags.filter(f=>f.type==='template').map((f,i) => (
+                      <div key={i} className="analysis-flag template"><span className="analysis-flag-icon">▤</span><span>{f.sev==='major' ? <strong>{f.msg}</strong> : f.msg}</span></div>
                     ))}
                   </div>
                 )}
@@ -2034,6 +2321,7 @@ function App() {
   }).length;
   const renewalRisk = buildRenewalRows(data)
     .filter(x => x.posture === 'Non-renewal' || x.posture === 'At risk / price pressure').length;
+  const offTemplateCount = data.filter(r => !isPointerLob(r) && checkTemplate(r.status, r).length > 0).length;
 
   return (
     <div className="app">
@@ -2075,6 +2363,10 @@ function App() {
           <div className={`tab${tab==='oneonone'?' active':''}`} onClick={() => setTab('oneonone')}>
             1:1 Prep
           </div>
+          <div className={`tab${tab==='compliance'?' active':''}`} onClick={() => setTab('compliance')}>
+            Compliance
+            {offTemplateCount > 0 && <span className="badge badge-warn">{offTemplateCount}</span>}
+          </div>
         </div>
 
         <div className="content">
@@ -2082,6 +2374,7 @@ function App() {
           {tab === 'portfolio' && <PortfolioView data={data} notes={notes} />}
           {tab === 'renewals' && <RenewalsView data={data} />}
           {tab === 'oneonone' && <OneOnOneView data={data} notes={notes} />}
+          {tab === 'compliance' && <ComplianceView data={data} />}
         </div>
       </div>
     </div>
