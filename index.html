@@ -4,10 +4,11 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>LOB Status Dashboard</title>
-  <script src="https://cdn.jsdelivr.net/npm/react@18.3.1/umd/react.development.js" crossorigin></script>
-  <script src="https://cdn.jsdelivr.net/npm/react-dom@18.3.1/umd/react-dom.development.js" crossorigin></script>
-  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone@7.24.7/babel.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://unpkg.com/papaparse@5.4.1/papaparse.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
   <style>
@@ -237,17 +238,76 @@
     .analysis-flag.alert { background: var(--red-bg); border: 1px solid var(--red-border); color: var(--red); }
     .analysis-flag.info { background: var(--blue-bg); border: 1px solid var(--blue-border); color: var(--blue); }
     .analysis-flag.fix { background: #fdf2e8; border: 1px solid #f0d0a8; color: var(--orange); }
+
+    /* Portfolio matrix */
+    .matrix-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; overflow-x: auto; }
+    .matrix { width: 100%; border-collapse: collapse; min-width: 780px; }
+    .matrix th { padding: 0.55rem 0.6rem; font-size: 0.66rem; text-align: center; }
+    .matrix th.acct-col { text-align: left; min-width: 190px; }
+    .matrix td { padding: 0.5rem 0.6rem; border-top: 1px solid var(--border); }
+    .matrix td.cell { text-align: center; cursor: help; }
+    .matrix tr.grp td { background: var(--surface2); font-family: var(--mono); font-size: 0.7rem; color: var(--text2); letter-spacing: 0.05em; padding: 0.4rem 0.6rem; font-weight: 600; }
+    .matrix tr.acct:hover { background: var(--surface2); }
+    .pill { display: inline-block; padding: 0.16rem 0.5rem; border-radius: 10px; font-size: 0.68rem; font-weight: 600; font-family: var(--mono); border: 1px solid; white-space: nowrap; }
+    .cell-note { font-size: 0.62rem; color: var(--text3); margin-top: 3px; max-width: 150px; margin-left: auto; margin-right: auto; line-height: 1.3; }
+    .matrix tr.acct { cursor: pointer; }
+    .matrix tr.acct.open { background: var(--surface2); }
+    .matrix tr.expand-row td { background: var(--surface2); padding: 0; border-top: none; }
+    .rollup-why { font-size: 0.62rem; color: var(--text3); margin-top: 0.45rem; line-height: 1.35; border-top: 1px solid var(--border); padding-top: 0.4rem; }
+
+    /* Domain scorecard inside an expanded account */
+    .domain-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.6rem; padding: 0.9rem 1.25rem 0; }
+    .ds-card { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.6rem 0.7rem; }
+    .ds-title { font-size: 0.64rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); }
+    .ds-state { font-size: 0.82rem; font-weight: 600; margin-top: 2px; }
+    .ds-detail { font-size: 0.72rem; color: var(--text2); margin-top: 2px; line-height: 1.35; }
+    .ds-why { font-size: 0.6rem; color: var(--text3); margin-top: 0.35rem; border-top: 1px solid var(--border); padding-top: 0.3rem; line-height: 1.3; }
+
+    /* Single-box update text */
+    .update-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+    .update-box-head { padding: 0.5rem 0.75rem; background: var(--surface3); border-bottom: 1px solid var(--border); font-size: 0.66rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+    .update-missing { color: var(--red); text-transform: none; letter-spacing: 0; font-size: 0.68rem; }
+    .update-box-body { padding: 0.8rem 0.9rem; font-size: 0.8rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; color: var(--text); max-height: 460px; overflow-y: auto; }
+
+    /* Domain rollup cards */
+    .rollup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0.7rem; margin-bottom: 1.1rem; }
+    .rollup-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.75rem 0.85rem; }
+    .rollup-title { font-size: 0.68rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--text3); margin-bottom: 0.5rem; }
+    .rollup-bar { display: flex; height: 7px; border-radius: 4px; overflow: hidden; background: var(--surface3); margin-bottom: 0.45rem; }
+    .rollup-legend { display: flex; flex-wrap: wrap; gap: 0.4rem; font-size: 0.68rem; font-family: var(--mono); }
+
+    /* 1:1 view */
+    .oo-header { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 0.9rem 1.1rem; margin-bottom: 1rem; }
+    .oo-owner-tabs { display: flex; gap: 0.4rem; flex-wrap: wrap; margin-bottom: 1rem; }
+    .oo-owner-tab { padding: 0.4rem 0.8rem; border-radius: 6px; font-size: 0.8rem; cursor: pointer; border: 1px solid var(--border); background: var(--surface); color: var(--text2); transition: all 0.15s; }
+    .oo-owner-tab:hover { border-color: var(--border2); color: var(--text); }
+    .oo-owner-tab.active { background: var(--blue-bg); border-color: var(--blue); color: var(--blue); font-weight: 500; }
+    .oo-owner-tab .cnt { font-family: var(--mono); font-size: 0.7rem; opacity: 0.75; margin-left: 0.3rem; }
+    .oo-acct { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 0.7rem; overflow: hidden; }
+    .oo-acct-head { padding: 0.7rem 0.9rem; display: flex; align-items: center; gap: 0.75rem; cursor: pointer; }
+    .oo-acct-head:hover { background: var(--surface2); }
+    .oo-acct-name { font-weight: 500; font-size: 0.88rem; flex: 1; }
+    .oo-domains { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+    .oo-body { border-top: 1px solid var(--border); padding: 0.85rem 0.9rem; background: var(--surface2); }
+    .talk-item { display: flex; gap: 0.5rem; padding: 0.4rem 0.55rem; border-radius: 5px; margin-bottom: 0.35rem; font-size: 0.8rem; background: var(--surface); border: 1px solid var(--border); }
+    .ask-q { font-style: italic; color: var(--text2); }
+    .print-only { display: none; }
+    @media print {
+      body { background: #fff; }
+      .topbar, .tab-nav, .oo-owner-tabs, .btn { display: none !important; }
+      .oo-body { display: block !important; }
+      .print-only { display: block; }
+    }
     .analysis-flag-icon { flex-shrink: 0; margin-top: 1px; }
     .no-flags { font-size: 0.78rem; color: var(--green); display: flex; align-items: center; gap: 0.4rem; }
 
-    scrollbar-width: thin;
-    scrollbar-color: var(--border2) transparent;
+    * { scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
   </style>
 </head>
 <body>
 <div id="root"></div>
 
-<script type="text/babel" data-presets="react">
+<script type="text/plain" id="app-source">
 const { useState, useMemo, useEffect, useCallback } = React;
 
 // ── Utilities ──────────────────────────────────────────────────────────────
@@ -255,13 +315,30 @@ const { useState, useMemo, useEffect, useCallback } = React;
 function parseDate(val) {
   if (!val) return null;
   const s = String(val).trim();
-  // MM-DD-YYYY HH:MM:SS  -> build in LOCAL time to avoid UTC day-shift
-  const m = s.match(/^(\d{2})-(\d{2})-(\d{4})(?:\s+(\d{2}):(\d{2}):(\d{2}))?/);
-  if (m) return new Date(+m[3], +m[1]-1, +m[2], +(m[4]||0), +(m[5]||0), +(m[6]||0));
-  // YYYY-MM-DD HH:MM:SS
-  const m2 = s.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2}):(\d{2}))?/);
-  if (m2) return new Date(+m2[1], +m2[2]-1, +m2[3], +(m2[4]||0), +(m2[5]||0), +(m2[6]||0));
+  // Time part, if any (24h or 12h with am/pm)
+  const tm = s.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(am|pm)?/i);
+  let hh = tm ? +tm[1] : 0, mi = tm ? +tm[2] : 0, ss = tm && tm[3] ? +tm[3] : 0;
+  if (tm && tm[4]) { const pm = /pm/i.test(tm[4]); if (pm && hh < 12) hh += 12; if (!pm && hh === 12) hh = 0; }
+
+  // YYYY-MM-DD  (ISO first, so it isn't mistaken for M-D-Y)
+  let m = s.match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  if (m) return new Date(+m[1], +m[2]-1, +m[3], hh, mi, ss);
+
+  // M/D/YY, M/D/YYYY, MM-DD-YYYY — US order, 1- or 2-digit month/day,
+  // 2- or 4-digit year. Covers both the old ServiceNow export format
+  // (06-01-2026 10:49:05) and the current one (8/3/26 13:46).
+  m = s.match(/^(\d{1,2})[-\/](\d{1,2})[-\/](\d{2,4})/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000; return new Date(y, +m[1]-1, +m[2], hh, mi, ss); }
+
   return null;
+}
+
+// First integer in a string — "3  (RCA PRB0019048)" is 3 interruptions, not
+// 30019048. Stripping every non-digit would swallow ticket numbers.
+function firstInt(v) {
+  if (!v) return null;
+  const m = String(v).match(/\d+/);
+  return m ? parseInt(m[0], 10) : null;
 }
 
 function daysAgo(val) {
@@ -305,44 +382,18 @@ function formatDate(val) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 }
 
-function isWithin6Months(val) {
-  const d = parseDate(val);
-  if (!d) return false;
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const end   = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  const cutoff = new Date(today);
-  cutoff.setMonth(cutoff.getMonth() + 6);
-  return end >= today && end <= cutoff;
-}
-
-function isContractExpired(val) {
-  const d = parseDate(val);
-  if (!d) return false;
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return new Date(d.getFullYear(), d.getMonth(), d.getDate()) < today;
-}
-
-function daysUntilContract(val) {
-  const d = parseDate(val);
-  if (!d) return null;
-  const now = new Date();
-  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  return Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - today) / 86400000);
-}
-
 function normalizeRow(r) {
   return {
-    lob:         (r['u_lob.u_lob_details'] || r['u_lob'] || '').trim(),
-    customer:    (r['u_customer_relationship.u_customer_account'] || r['u_lob.u_customer_account'] || '').trim(),
-    owner:       (r['u_project_owner'] || '').trim(),
-    sentiment:   (r['u_status_overall'] || 'Green').trim(),
-    operations:  (r['u_status_operations'] || 'Green').trim(),
-    updated:     (r['sys_updated_on'] || r['sys_updated'] || '').trim(),
-    contractEnd: (r['u_customer_relationship.u_contract_end'] || '').trim(),
-    status:      (r['u_lob_status'] || '').replace(/\r\n?/g, '\n').trim(),
-    description: (r['u_project_description'] || '').trim(),
+    lob:       (r['u_lob.u_lob_details'] || r['u_lob'] || '').trim(),
+    customer:  (r['u_customer_relationship.u_customer_account'] || r['u_lob.u_customer_account'] || '').trim(),
+    owner:     (r['u_project_owner'] || '').trim(),
+    sentiment: (r['u_status_overall'] || 'Green').trim(),
+    operations:(r['u_status_operations'] || 'Green').trim(),
+    updated:   (r['sys_updated_on'] || r['sys_updated'] || '').trim(),
+    contractEnd: (r['u_customer_relationship.u_contract_end'] || r['u_contract_end']
+               || r['u_lob.u_contract_end'] || '').trim(),
+    status:    (r['u_lob_status'] || '').replace(/\r\n?/g, '\n').trim(),
+    description:(r['u_project_description'] || '').trim(),
   };
 }
 
@@ -441,6 +492,8 @@ function parseStatus(status) {
   const renew  = sect(t, /Renewal\s+Status/i);
 
   return {
+    // CSDM-entered date at the top of the template ("Date: 7/30/2026")
+    reportedDate: f1(t, /^\s*Date\s*:[ \t]*([^\n]+)/i),
     // Weekly update
     weeklyWins: blk(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]),
     issues:     (() => { const v = blk(weekly, /Issues\s*\/?\s*(?:Concerns?|Risks?)?\s*:/i, [/\n\s*Changes\s*:/i, /\n\s*Upcoming/i, /\n\s*Next Week['\u2019]?s? Focus/i]); return isNoIssues(v) ? null : v; })(),
@@ -466,6 +519,7 @@ function parseStatus(status) {
     renewalFeedback: blk(renew, /Customer feedback[^:]*:/i, [/\n\s*Next steps/i]),
     renewalNextSteps: blk(renew, /Next steps\s*:/i, [/\n\s*Link to renewal/i]),
     renewalLink: linkField(renew, /Link to renewal presentation\/form\s*:/i),
+    renewalRaw: (renew || '').trim(),
   };
 }
 
@@ -554,6 +608,15 @@ function analyzeAccount(row, sections) {
   if (!row.status || row.status.trim().length < 50)
     flags.push({ type: 'alert', msg: 'Status field is empty or very thin — needs meaningful content' });
 
+  // The CSDM stamps a "Date:" at the top of the template. If the record was
+  // touched on cadence but that date is stale, the content is likely carried
+  // over from a previous week rather than genuinely refreshed.
+  if (sections.reportedDate) {
+    const rd = parseDate(sections.reportedDate);
+    if (rd && isStale(sections.reportedDate) && row.updated && !isStale(row.updated))
+      flags.push({ type: 'warn', msg: `Record updated on cadence but the update is dated ${formatDate(sections.reportedDate)} — is this content carried over from a prior week?` });
+  }
+
   // ── Status consistency ────────────────────────────────────────────────────
   if (issues && row.sentiment === 'Green')
     flags.push({ type: 'warn', msg: 'Issues listed but Customer Sentiment is Green — may be understating risk' });
@@ -575,7 +638,7 @@ function analyzeAccount(row, sections) {
 
   // ── Service health ────────────────────────────────────────────────────────
   if (interruptions) {
-    const n = parseInt(interruptions.replace(/\D/g, ''));
+    const n = firstInt(interruptions);
     if (!isNaN(n) && n >= 3)
       flags.push({ type: 'warn', msg: `${n} service interruptions in past 3 months — discuss impact and resolution plan` });
   }
@@ -584,12 +647,6 @@ function analyzeAccount(row, sections) {
     if (!isNaN(pct) && pct < 99.0)
       flags.push({ type: 'warn', msg: `SLA at ${sections.sla} — below 99% threshold, discuss impact with CSDM` });
   }
-
-  // ── Contract end date ─────────────────────────────────────────────────────
-  if (isContractExpired(row.contractEnd))
-    flags.push({ type: 'alert', msg: `Contract expired ${formatDate(row.contractEnd)} (${Math.abs(daysUntilContract(row.contractEnd))}d ago) — action required` });
-  else if (isWithin6Months(row.contractEnd))
-    flags.push({ type: 'warn', msg: `Contract ends ${formatDate(row.contractEnd)} (${daysUntilContract(row.contractEnd)}d) — confirm renewal status` });
 
   // ── Renewal ───────────────────────────────────────────────────────────────
   const isWithin9 = within9mo && within9mo.toLowerCase().includes('yes');
@@ -608,7 +665,7 @@ function analyzeAccount(row, sections) {
     else if (!renewalNextSteps || isPlaceholder(renewalNextSteps))
       flags.push({ type: 'warn', msg: 'Within 9 months of contract end — renewal feedback present but next steps are missing or TBD' });
     else
-      flags.push({ type: 'info', msg: `Renewal in progress — next steps: ${renewalNextSteps.substring(0, 100)}` });
+      flags.push({ type: 'info', msg: `Renewal in progress — next steps: ${snip(renewalNextSteps, 100)}` });
   }
 
   // ── Update quality (CSDM to fix) ──────────────────────────────────────────
@@ -651,8 +708,202 @@ function analyzeAccount(row, sections) {
   return flags;
 }
 
+// Parse a date written in any of the loose formats CSDMs use
+function parseLooseDate(str) {
+  if (!str) return null;
+  let m = str.match(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})\b/);
+  if (m) { let y = +m[3]; if (y < 100) y += 2000;
+    return `${y}-${String(+m[1]).padStart(2,'0')}-${String(+m[2]).padStart(2,'0')}`; }
+  m = str.match(/\b(\d{4})-(\d{2})-(\d{2})\b/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  return null;
+}
+
+// Pull a contract end / renewal date out of the Renewal Status section.
+// CSDMs record this inconsistently — on its own "Renewal Date:" line, tacked
+// onto the 9-month answer, buried in Next steps as "CREL End date", or as a
+// bare quarter or year. Returns the best available with how precise it is.
+function extractContractEnd(renew) {
+  if (!renew) return { label: null, iso: null, src: null, precision: 'none' };
+  const pats = [
+    [/(?:CREL\s+)?(?:Contract|CREL)\s+End\s+Date\s*:?\s*([^\n]{0,40})/i, 'Contract end date'],
+    [/Renewal\s+Date\s*:?\s*([^\n]{0,40})/i, 'Renewal date'],
+    [/Renewal\s+date\s+([0-9\/\-]{6,12})/i, 'Renewal date'],
+    [/contract\s+end(?:s|ing)?\s*(?:on|:)?\s*([0-9\/\-]{6,12})/i, 'Contract end'],
+  ];
+  for (const [re, src] of pats) {
+    const m = renew.match(re);
+    if (m) { const iso = parseLooseDate(m[1]); if (iso) return { label: m[1].trim().replace(/[.,;]$/,''), iso, src, precision: 'exact' }; }
+  }
+  const q = renew.match(/\b(Q[1-4])\s*(?:of\s*)?(20\d\d)\b/i);
+  if (q) return { label: `${q[1].toUpperCase()} ${q[2]}`, iso: null, src: 'Quarter stated', precision: 'quarter' };
+  const any = parseLooseDate(renew);
+  if (any) return { label: any, iso: any, src: 'Date found in section', precision: 'exact' };
+  const yr = renew.match(/\b(20\d\d)\b/);
+  if (yr) return { label: yr[1], iso: null, src: 'Year only', precision: 'year' };
+  return { label: null, iso: null, src: null, precision: 'none' };
+}
+
+// Contract end, preferring the real ServiceNow field
+// (u_customer_relationship.u_contract_end) and falling back to whatever the
+// CSDM typed into the Renewal Status text when that column isn't exported.
+function resolveContractEnd(row, s) {
+  if (row && row.contractEnd) {
+    const d = parseDate(row.contractEnd) || (parseLooseDate(row.contractEnd) ? new Date(parseLooseDate(row.contractEnd) + 'T00:00:00') : null);
+    if (d && !isNaN(d)) {
+      const iso = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+      return { label: iso, iso, src: 'Contract end field', precision: 'exact', fromField: true };
+    }
+  }
+  const e = extractContractEnd(s ? s.renewalRaw : null);
+  return { ...e, fromField: false };
+}
+
+// Trim to a word boundary rather than slicing mid-word
+function snip(v, n) {
+  if (!v) return v;
+  const s = String(v).replace(/\s+/g, ' ').trim();
+  if (s.length <= n) return s;
+  const cut = s.slice(0, n);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[.,;:\-–]$/, '') + '…';
+}
+
+// ── Domain scoring ─────────────────────────────────────────────────────────
+// Scores each account across the portfolio domains. Every domain returns
+// {state, label, detail} where state is 'good' | 'watch' | 'risk' | 'nodata'.
+// 'nodata' means the CSDM left it blank — that's a coverage gap, not a health
+// problem, and is counted separately from 'risk'.
+
+const DOMAINS = [
+  { key: 'customerHealth',  label: 'Customer Health',   short: 'Cust' },
+  { key: 'serviceReviews',  label: 'Service Health Reviews', short: 'SHR' },
+  { key: 'lifecycle',       label: 'Lifecycle Planning', short: 'Lifecycle' },
+  { key: 'renewal',         label: 'Renewal Status',    short: 'Renewal' },
+  { key: 'profitability',   label: 'Profitability',     short: 'Profit' },
+];
+
+function scoreDomains(row, s) {
+  const d = {};
+
+  // Customer Health — sentiment/ops status, SLA, interruptions
+  (() => {
+    const bits = [];
+    let state = 'good';
+    if (row.sentiment !== 'Green' || row.operations !== 'Green') {
+      state = (row.sentiment === 'Red' || row.operations === 'Red') ? 'risk' : 'watch';
+      bits.push(`Sentiment ${row.sentiment} / Ops ${row.operations}`);
+    }
+    if (s.sla) {
+      const pct = parseFloat(s.sla.replace(/[^0-9.]/g, ''));
+      if (!isNaN(pct) && pct < 99) { state = 'risk'; bits.push(`SLA ${s.sla}`); }
+      else bits.push(`SLA ${s.sla}`);
+    }
+    const n = firstInt(s.interruptions);
+    if (n !== null && !isNaN(n)) {
+      if (n >= 3) { state = 'risk'; bits.push(`${n} interruptions`); }
+      else if (n >= 1) { if (state === 'good') state = 'watch'; bits.push(`${n} interruption${n>1?'s':''}`); }
+    }
+    if (s.issues) { if (state === 'good') state = 'watch'; bits.push('open issues'); }
+    if (!s.sla && n === null && !s.issues && row.sentiment === 'Green' && row.operations === 'Green')
+      { d.customerHealth = { state: 'nodata', label: 'Not documented', detail: 'No SLA or interruption data' }; return; }
+    d.customerHealth = { state, label: state === 'good' ? 'Healthy' : state === 'watch' ? 'Watch' : 'At risk', detail: bits.join(' · ') || '—' };
+  })();
+
+  // Service Health Reviews — cadence established, completed, participation
+  (() => {
+    const freq = s.frequency;
+    if (!freq) { d.serviceReviews = { state: 'nodata', label: 'Not documented', detail: 'No review cadence recorded' }; return; }
+    const low = freq.toLowerCase();
+    const declined = /declin|none|not requested|no reviews?|refus/.test(low);
+    const bits = [snip(freq, 60)];
+    if (declined) { d.serviceReviews = { state: 'risk', label: 'None held', detail: bits.join(' · ') }; return; }
+    const done = s.completed && /yes|complet|held|done/i.test(s.completed);
+    if (done) { d.serviceReviews = { state: 'good', label: 'On track', detail: bits.join(' · ') }; return; }
+    d.serviceReviews = { state: 'watch', label: 'Cadence set, none this period', detail: bits.join(' · ') };
+  })();
+
+  // Lifecycle Planning — current versions known + forward plan
+  (() => {
+    const cur = s.currentVersions, next = s.nextVersion;
+    const nextReal = next && !isPlaceholder(next) ? next : null;
+    if (!cur && !nextReal) { d.lifecycle = { state: 'nodata', label: 'Not documented', detail: 'No versions or plan recorded' }; return; }
+    if (!nextReal) { d.lifecycle = { state: 'watch', label: 'No forward plan', detail: cur ? `On ${snip(cur, 50)}` : '—' }; return; }
+    if (/decommission|end of contract|sunset|retire/i.test(nextReal))
+      { d.lifecycle = { state: 'risk', label: 'Decommission planned', detail: snip(nextReal, 60) }; return; }
+    if (!cur) { d.lifecycle = { state: 'watch', label: 'Plan set, versions unknown', detail: snip(nextReal, 60) }; return; }
+    d.lifecycle = { state: 'good', label: 'Planned', detail: `${snip(cur,40)} → ${snip(nextReal,40)}` };
+  })();
+
+  // Renewal Status — driven by the real contract end date when we have one,
+  // falling back to the CSDM's free-text "within 9 months?" answer otherwise.
+  (() => {
+    const end = resolveContractEnd(row, s);
+    const fb = s.renewalFeedback;
+    const fbLow = (fb || '').toLowerCase();
+    const nonRenew = /non-renewal|not renewing|cancell?ation|will not renew/.test(fbLow);
+    const atRisk = /at risk|lower price|discount|reduc/.test(fbLow);
+
+    let inWindow = null, endNote = '';
+    if (end.iso) {
+      const days = Math.round((new Date(end.iso + 'T00:00:00') - new Date()) / 86400000);
+      endNote = `ends ${formatDate(end.iso)}`;
+      if (days < 0) { d.renewal = { state: 'risk', label: 'Contract end date passed', detail: `${endNote} — ${Math.abs(days)}d ago` }; return; }
+      inWindow = days <= 274; // ~9 months
+      endNote += ` (${Math.round(days/30.44)} mo)`;
+    } else {
+      const w9 = s.within9mo;
+      if (!w9) { d.renewal = { state: 'nodata', label: 'Not answered', detail: 'No contract end date and 9-month question unanswered' }; return; }
+      inWindow = /yes/i.test(w9);
+      endNote = snip(w9, 50);
+    }
+
+    if (nonRenew) { d.renewal = { state: 'risk', label: 'NON-RENEWAL', detail: fb ? snip(fb, 70) : endNote }; return; }
+    if (atRisk)   { d.renewal = { state: 'risk', label: 'At risk / price pressure', detail: fb ? snip(fb, 70) : endNote }; return; }
+    if (!inWindow) { d.renewal = { state: 'good', label: 'Not in window', detail: endNote }; return; }
+    if (!fb || isPlaceholder(fb)) { d.renewal = { state: 'watch', label: 'In window, position unknown', detail: endNote }; return; }
+    if (!s.renewalNextSteps || isPlaceholder(s.renewalNextSteps)) { d.renewal = { state: 'watch', label: 'In window, no next steps', detail: `${endNote} · ${snip(fb, 40)}` }; return; }
+    d.renewal = { state: 'good', label: 'On track', detail: `${endNote} · ${snip(fb, 45)}` };
+  })();
+
+  // Profitability — the template only carries a link, so this is coverage only
+  (() => {
+    d.profitability = s.profitabilityLink
+      ? { state: 'good', label: 'Link on file', detail: 'Review workbook linked' }
+      : { state: 'nodata', label: 'No link', detail: 'Profitability workbook not linked' };
+  })();
+
+  return d;
+}
+
+// Short plain-English note on what drives each domain's colour, shown on the
+// rollup cards, as column tooltips, and in the expanded account scorecard.
+const DOMAIN_KEYS = {
+  customerHealth: 'Red: SLA <99%, 3+ interruptions, or Red status · Yellow: non-green status, 1–2 interruptions, or open issues · Grey: no SLA/interruption data',
+  serviceReviews: 'Red: customer declined or none held · Yellow: cadence set but none completed this period · Green: review completed · Grey: cadence not recorded',
+  lifecycle: 'Red: decommission planned · Yellow: versions known but no forward plan · Green: current versions + upgrade path · Grey: nothing recorded',
+  renewal: 'Red: non-renewal or price pressure · Yellow: inside 9 months with position or next steps unclear · Green: outside window or on track · Grey: 9-month question unanswered',
+  profitability: 'Green: workbook linked · Grey: no link. Template carries no margin value, so this is coverage only',
+};
+
+const STATE_META = {
+  good:   { color: 'var(--green)',  bg: 'var(--green-bg)',  border: 'var(--green-border)',  icon: '●', rank: 3 },
+  watch:  { color: 'var(--yellow)', bg: 'var(--yellow-bg)', border: 'var(--yellow-border)', icon: '●', rank: 1 },
+  risk:   { color: 'var(--red)',    bg: 'var(--red-bg)',    border: 'var(--red-border)',    icon: '●', rank: 0 },
+  nodata: { color: 'var(--text3)',  bg: 'var(--surface3)',  border: 'var(--border)',        icon: '○', rank: 2 },
+};
+
 // Generate OneNote text for an owner
 function generateExport(owner, accounts, notes, today) {
+  // Worst-first so the 1:1 opens with what matters
+  const ranked = accounts.map(a => {
+    const s = parseStatus(a.status);
+    const domains = scoreDomains(a, s);
+    const worst = Math.min(...DOMAINS.map(d => STATE_META[domains[d.key]?.state || 'nodata'].rank));
+    return { a, worst };
+  }).sort((x, y) => x.worst - y.worst || x.a.customer.localeCompare(y.a.customer));
+  accounts = ranked.map(r => r.a);
+
   let t = `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n`;
   t += `WEEKLY 1:1 PREP — ${owner.toUpperCase()}\n`;
   t += `${today}   |   ${accounts.length} accounts\n`;
@@ -662,15 +913,38 @@ function generateExport(owner, accounts, notes, today) {
   t += `Sentiment:  ${g} Green  /  ${y} Yellow  /  ${r} Red\n`;
   t += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  // Off-cadence updates
-  const stale = accounts.filter(a => isStale(a.updated));
-  if (stale.length > 0) {
-    t += `⏰ OFF-CADENCE UPDATES (not updated on Wed/Thu)\n`;
-    t += `${'─'.repeat(60)}\n`;
-    stale.forEach(a => {
-      t += `  • ${a.customer}  [${a.lob}]  —  last updated ${weekdayName(a.updated)} ${formatDate(a.updated)}  (${daysAgo(a.updated)}d ago)\n`;
-    });
-    t += `\n\n`;
+  // Portfolio scorecard across the owner's accounts
+  t += `PORTFOLIO SCORECARD\n`;
+  t += `${'─'.repeat(60)}\n`;
+  DOMAINS.forEach(d => {
+    const c = { good:0, watch:0, risk:0, nodata:0 };
+    accounts.forEach(a => { const st = scoreDomains(a, parseStatus(a.status))[d.key]?.state; if (st) c[st]++; });
+    const parts = [];
+    if (c.risk) parts.push(`${c.risk} risk`);
+    if (c.watch) parts.push(`${c.watch} watch`);
+    if (c.nodata) parts.push(`${c.nodata} blank`);
+    if (c.good) parts.push(`${c.good} ok`);
+    t += `  ${d.label.padEnd(24)} ${parts.join('  ·  ')}\n`;
+  });
+  t += `\n\n`;
+
+  // Off-cadence updates (only meaningful when the export carries dates)
+  const haveDates = accounts.some(a => a.updated);
+  if (!haveDates) {
+    t += `⏰ CADENCE: not checked — this export has no sys_updated_on column.\n`;
+    t += `   Add that field in ServiceNow to track Wed/Thu update compliance.\n\n\n`;
+  } else {
+    const stale = accounts.filter(a => isStale(a.updated));
+    if (stale.length > 0) {
+      t += `⏰ OFF-CADENCE UPDATES (not updated on Wed/Thu)\n`;
+      t += `${'─'.repeat(60)}\n`;
+      stale.forEach(a => {
+        t += a.updated
+          ? `  • ${a.customer}  [${a.lob}]  —  last updated ${weekdayName(a.updated)} ${formatDate(a.updated)}  (${daysAgo(a.updated)}d ago)\n`
+          : `  • ${a.customer}  [${a.lob}]  —  no update date recorded\n`;
+      });
+      t += `\n\n`;
+    }
   }
 
   // All accounts: manager flags first, then the full update text verbatim
@@ -679,23 +953,43 @@ function generateExport(owner, accounts, notes, today) {
   accounts.forEach((a, i) => {
     const s = parseStatus(a.status);
     const flags = analyzeAccount(a, s);
+    const domains = scoreDomains(a, s);
+    const points = talkingPoints(a, s, domains, flags);
     t += `\n${'═'.repeat(60)}\n`;
     t += `${i+1}. ${a.customer}  [${a.lob}]\n`;
-    t += `Owner: ${a.owner}  |  Sentiment: ${a.sentiment}  |  Operations: ${a.operations}  |  Updated: ${weekdayName(a.updated)} ${formatDate(a.updated)}`;
-    if (a.contractEnd) t += `  |  Contract End: ${formatDate(a.contractEnd)}${isWithin6Months(a.contractEnd) ? ' ⚑ ≤6mo' : isContractExpired(a.contractEnd) ? ' ⚑ EXPIRED' : ''}`;
-    t += `\n`;
+    t += `Owner: ${a.owner}  |  Sentiment: ${a.sentiment}  |  Operations: ${a.operations}`;
+    t += a.updated ? `  |  Updated: ${weekdayName(a.updated)} ${formatDate(a.updated)}\n` : `\n`;
     t += `${'═'.repeat(60)}\n`;
 
-    // Manager flags split into discussion topics and quality fixes
-    const discuss = flags.filter(f => f.type === 'alert' || f.type === 'warn' || f.type === 'info');
-    const fixes   = flags.filter(f => f.type === 'fix');
+    // Domain scorecard
+    t += `\nSCORECARD:\n`;
+    DOMAINS.forEach(d => {
+      const dm = domains[d.key];
+      const mark = dm.state === 'risk' ? 'RISK ' : dm.state === 'watch' ? 'WATCH' : dm.state === 'nodata' ? 'BLANK' : 'OK   ';
+      t += `  [${mark}] ${d.label.padEnd(23)} ${dm.label}${dm.detail && dm.detail !== '—' ? ' — ' + dm.detail : ''}\n`;
+    });
 
-    if (discuss.length > 0) {
-      t += `\nDISCUSSION TOPICS:\n`;
-      discuss.forEach(f => t += `  ${f.type==='alert'?'⚑':f.type==='warn'?'△':'ℹ'} ${f.msg}\n`);
+    // Talking points, each with the question to ask
+    if (points.length > 0) {
+      t += `\nTALKING POINTS:\n`;
+      points.forEach(p => {
+        t += `\n  ${p.kind==='risk'?'⚑':p.kind==='issue'?'!':'△'} ${p.domain} — ${p.msg}\n`;
+        if (p.detail) t += `      ${snip(p.detail, 200)}\n`;
+        if (p.ask) t += `      ASK: ${p.ask}\n`;
+      });
     } else {
-      t += `\nDISCUSSION TOPICS: ✓ None\n`;
+      t += `\nTALKING POINTS: ✓ Nothing flagged — quick confirm and move on\n`;
     }
+
+    // Other manager observations not already covered by a talking point
+    const other = flags.filter(f => (f.type === 'warn' || f.type === 'info')
+      && !points.some(p => p.msg === f.msg));
+    if (other.length > 0) {
+      t += `\nALSO NOTED:\n`;
+      other.forEach(f => t += `  ${f.type==='warn'?'△':'ℹ'} ${f.msg}\n`);
+    }
+
+    const fixes = flags.filter(f => f.type === 'fix');
     if (fixes.length > 0) {
       t += `\nCSDM TO FIX IN NEXT UPDATE:\n`;
       fixes.forEach(f => t += `  ✎ ${f.msg}\n`);
@@ -739,18 +1033,6 @@ function DateBadge({ val }) {
   const cls = stale ? 'date-stale' : 'date-fresh';
   const label = days === 0 ? 'Today' : days === 1 ? 'Yesterday' : `${days}d ago`;
   return <span className={`date-badge ${cls}`}>{label}</span>;
-}
-
-function ContractEndBadge({ val }) {
-  if (!val) return <span style={{color:'var(--text3)', fontSize:'0.78rem'}}>—</span>;
-  const days = daysUntilContract(val);
-  if (days === null) return <span style={{color:'var(--text3)', fontSize:'0.78rem'}}>—</span>;
-  const expired = days < 0;
-  const soon    = !expired && isWithin6Months(val);
-  const label   = expired ? `Exp ${Math.abs(days)}d ago` : days === 0 ? 'Expires today' : `${days}d left`;
-  if (expired) return <span className="date-badge date-stale">{label}</span>;
-  if (soon)    return <span className="date-badge date-warn">{label}</span>;
-  return <span style={{fontSize:'0.78rem', color:'var(--text2)'}}>{label}</span>;
 }
 
 function Field({ label, value, isLink }) {
@@ -830,12 +1112,10 @@ function FieldBox({ label, value, isLink, missing, isIssue, wide }) {
 function ExpandedRow({ row, notes }) {
   const s = parseStatus(row.status);
   const flags = analyzeAccount(row, s);
-  const missingKeys = new Set(computeMissing(row.status).map(m => m.key));
+  const missing = computeMissing(row.status);
+  const missingLabels = missing.map(m => m.label);
   const [noteText, setNoteText] = useState(notes.getNote(row.lob)?.text || '');
   const [saved, setSaved] = useState(false);
-  const [showRaw, setShowRaw] = useState(false);
-  const allBlank = missingKeys.has('all');
-  const miss = k => allBlank || missingKeys.has(k);
 
   function saveNote() {
     notes.setNote(row.lob, noteText);
@@ -870,265 +1150,24 @@ function ExpandedRow({ row, notes }) {
         </div>
       </div>
 
-      {/* Each section in its own box, matching the update template */}
-      <div className="field-grid">
-        <div className="group-label">Weekly Update</div>
-        <FieldBox label="Weekly Accomplishments" value={s.weeklyWins} missing={miss('weeklyWins')} wide />
-        <FieldBox label="Issues / Concerns" value={s.issues} isIssue wide />
-        <FieldBox label="Changes" value={s.changes} missing={miss('changes')} />
-        <FieldBox label="Upcoming Milestones" value={s.upcoming} missing={miss('upcoming')} />
-        <FieldBox label="Next Week's Focus" value={s.nextFocus} missing={miss('nextFocus')} />
 
-        <div className="group-label">Service Health Reviews</div>
-        <FieldBox label="Frequency of Service Health Reviews" value={s.frequency} missing={miss('frequency')} />
-        <FieldBox label="Completed This Period?" value={s.completed} missing={miss('completed')} />
-        <FieldBox label="Customer Participation" value={s.participation} missing={miss('participation')} />
-        <FieldBox label="Link" value={s.shrLink} isLink missing={miss('shrLink')} />
-
-        <div className="group-label">Customer Health</div>
-        <FieldBox label="SLA" value={s.sla} missing={miss('sla')} />
-        <FieldBox label="Service Interruptions Impacting SLA / Sentiment (3mo)" value={s.interruptions} missing={miss('interruptions')} wide />
-        <FieldBox label="Weekly Meeting Notes Link" value={s.meetingNotesLink} isLink missing={miss('meetingNotesLink')} />
-
-        <div className="group-label">Profitability</div>
-        <FieldBox label="Link" value={s.profitabilityLink} isLink missing={miss('profitabilityLink')} />
-
-        <div className="group-label">Lifecycle Planning</div>
-        <FieldBox label="Current Versions" value={s.currentVersions} missing={miss('currentVersions')} />
-        <FieldBox label="Next Version or Decommission Plan (version, date, contract needs)" value={s.nextVersion} missing={miss('nextVersion')} wide />
-
-        <div className="group-label">Renewal Status</div>
-        <FieldBox label="Contract End Date" value={row.contractEnd ? formatDate(row.contractEnd) : null}
-          missing={!row.contractEnd}
-          isIssue={isWithin6Months(row.contractEnd) || isContractExpired(row.contractEnd)} />
-        <FieldBox label="Within 9 Months of Contract End?" value={s.within9mo} missing={miss('within9mo')} />
-        <FieldBox label="Customer Feedback (renewing / at risk / non-renewal)" value={s.renewalFeedback} missing={miss('renewalFeedback')} wide />
-        <FieldBox label="Next Steps" value={s.renewalNextSteps} missing={miss('renewalNextSteps')} />
-        <FieldBox label="Link to Renewal Presentation / Form" value={s.renewalLink} isLink missing={miss('renewalLink')} />
-      </div>
-
-      <div style={{marginTop:'0.75rem'}}>
-        <span className="raw-toggle" onClick={() => setShowRaw(v => !v)}>
-          {showRaw ? '▲ Hide raw status' : '▼ View raw status'}
-        </span>
-        {showRaw && <div className="raw-content">{row.status}</div>}
+      {/* Full update as submitted, in one box */}
+      <div className="update-box">
+        <div className="update-box-head">
+          <span>Update as submitted</span>
+          {missingLabels.length > 0 && (
+            <span className="update-missing">
+              {missingLabels.length} field{missingLabels.length !== 1 ? 's' : ''} left blank: {missingLabels.join(', ')}
+            </span>
+          )}
+        </div>
+        <div className="update-box-body">{row.status || '(no status text provided)'}</div>
       </div>
     </div>
   );
 }
 
 // ── Main table view ────────────────────────────────────────────────────────
-
-function TableView({ data, notes }) {
-  const [search, setSearch] = useState('');
-  const [filterOwner, setFilterOwner] = useState('all');
-  const [filterSentiment, setFilterSentiment] = useState('all');
-  const [filterStatus, setFilterStatus] = useState('all');
-  const [sortBy, setSortBy] = useState('updated');
-  const [sortDir, setSortDir] = useState('asc'); // stale first
-  const [expandedRow, setExpandedRow] = useState(null);
-
-  const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
-
-  const allSections = useMemo(() => data.map(r => parseStatus(r.status)), [data]);
-  const allFlags = useMemo(() => data.map((r,i) => analyzeAccount(r, allSections[i])), [data, allSections]);
-
-  const stats = useMemo(() => ({
-    total: data.length,
-    green: data.filter(d => d.sentiment === 'Green').length,
-    yellow: data.filter(d => d.sentiment === 'Yellow').length,
-    red: data.filter(d => d.sentiment === 'Red').length,
-    issues: allSections.filter(s => s.issues).length,
-    stale: data.filter(d => isStale(d.updated)).length,
-    alerts: allFlags.filter(f => f.some(x => x.type === 'alert')).length,
-    endingSoon: data.filter(d => isWithin6Months(d.contractEnd)).length,
-  }), [data, allSections, allFlags]);
-
-  const filtered = useMemo(() => {
-    let result = data.filter((row, i) => {
-      const q = search.toLowerCase();
-      const matchSearch = !search || row.customer.toLowerCase().includes(q) || row.lob.toLowerCase().includes(q) || row.owner.toLowerCase().includes(q);
-      const matchOwner = filterOwner === 'all' || row.owner === filterOwner;
-      const matchSentiment = filterSentiment === 'all' || row.sentiment === filterSentiment;
-      let matchStatus = true;
-      if (filterStatus === 'stale') matchStatus = isStale(row.updated);
-      else if (filterStatus === 'issues') matchStatus = !!allSections[i].issues;
-      else if (filterStatus === 'alerts') matchStatus = allFlags[i].some(f => f.type === 'alert');
-      else if (filterStatus === 'renewal') matchStatus = allSections[i].within9mo?.toLowerCase().includes('yes');
-      else if (filterStatus === 'endingSoon') matchStatus = isWithin6Months(row.contractEnd);
-      return matchSearch && matchOwner && matchSentiment && matchStatus;
-    });
-
-    result = result.slice().sort((a, b) => {
-      let av, bv;
-      if (sortBy === 'updated') {
-        av = parseDate(a.updated)?.getTime() || 0;
-        bv = parseDate(b.updated)?.getTime() || 0;
-      } else if (sortBy === 'contractEnd') {
-        av = parseDate(a.contractEnd)?.getTime() || 9999999999999;
-        bv = parseDate(b.contractEnd)?.getTime() || 9999999999999;
-      } else if (sortBy === 'customer') { av = a.customer.toLowerCase(); bv = b.customer.toLowerCase(); }
-      else if (sortBy === 'owner') { av = a.owner.toLowerCase(); bv = b.owner.toLowerCase(); }
-      else if (sortBy === 'sentiment') {
-        const ord = {Red:0,Yellow:1,Green:2}; av = ord[a.sentiment]??3; bv = ord[b.sentiment]??3;
-      } else { av = a[sortBy]; bv = b[sortBy]; }
-      if (av < bv) return sortDir === 'asc' ? -1 : 1;
-      if (av > bv) return sortDir === 'asc' ? 1 : -1;
-      return 0;
-    });
-
-    return result;
-  }, [data, search, filterOwner, filterSentiment, filterStatus, sortBy, sortDir, allSections, allFlags]);
-
-  function toggleSort(field) {
-    if (sortBy === field) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
-    else { setSortBy(field); setSortDir(field === 'updated' ? 'asc' : 'asc'); }
-  }
-
-  const sortIcon = field => sortBy === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '';
-  const hasFilters = search || filterOwner !== 'all' || filterSentiment !== 'all' || filterStatus !== 'all';
-
-  return (
-    <div>
-      <div className="stats-row">
-        <div className="stat-card" style={{cursor:'default'}}>
-          <div className="stat-label">Total</div>
-          <div className="stat-value">{stats.total}</div>
-        </div>
-        <div className={`stat-card green ${filterSentiment==='Green'?'active':''}`}
-          onClick={() => setFilterSentiment(filterSentiment==='Green'?'all':'Green')}>
-          <div className="stat-label">Green</div>
-          <div className="stat-value">{stats.green}</div>
-        </div>
-        <div className={`stat-card yellow ${filterSentiment==='Yellow'?'active':''}`}
-          onClick={() => setFilterSentiment(filterSentiment==='Yellow'?'all':'Yellow')}>
-          <div className="stat-label">Yellow</div>
-          <div className="stat-value">{stats.yellow}</div>
-        </div>
-        {stats.red > 0 && <div className={`stat-card red ${filterSentiment==='Red'?'active':''}`}
-          onClick={() => setFilterSentiment(filterSentiment==='Red'?'all':'Red')}>
-          <div className="stat-label">Red</div>
-          <div className="stat-value">{stats.red}</div>
-        </div>}
-        <div className={`stat-card orange ${filterStatus==='issues'?'active':''}`}
-          onClick={() => setFilterStatus(filterStatus==='issues'?'all':'issues')}>
-          <div className="stat-label">Issues</div>
-          <div className="stat-value">{stats.issues}</div>
-        </div>
-        <div className={`stat-card red ${filterStatus==='stale'?'active':''}`}
-          onClick={() => setFilterStatus(filterStatus==='stale'?'all':'stale')}>
-          <div className="stat-label">Stale</div>
-          <div className="stat-value">{stats.stale}</div>
-        </div>
-        <div className={`stat-card blue ${filterStatus==='alerts'?'active':''}`}
-          onClick={() => setFilterStatus(filterStatus==='alerts'?'all':'alerts')}>
-          <div className="stat-label">Flagged</div>
-          <div className="stat-value">{stats.alerts}</div>
-        </div>
-        {stats.endingSoon > 0 && <div className={`stat-card yellow ${filterStatus==='endingSoon'?'active':''}`}
-          onClick={() => setFilterStatus(filterStatus==='endingSoon'?'all':'endingSoon')}>
-          <div className="stat-label">≤6mo End</div>
-          <div className="stat-value">{stats.endingSoon}</div>
-        </div>}
-      </div>
-
-      <div className="filter-bar">
-        <input type="text" placeholder="Search customer, LOB, owner..." value={search} onChange={e => setSearch(e.target.value)} />
-        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)}>
-          <option value="all">All Owners</option>
-          {owners.map(o => <option key={o} value={o}>{o}</option>)}
-        </select>
-        <select value={filterSentiment} onChange={e => { setFilterSentiment(e.target.value); }}>
-          <option value="all">All Sentiment</option>
-          <option value="Green">Green</option>
-          <option value="Yellow">Yellow</option>
-          <option value="Red">Red</option>
-        </select>
-        <select value={filterStatus} onChange={e => setFilterStatus(e.target.value)}>
-          <option value="all">All Status</option>
-          <option value="stale">Off cadence</option>
-          <option value="issues">Has Issues</option>
-          <option value="alerts">Manager Flags</option>
-          <option value="renewal">Renewal ≤9mo</option>
-          <option value="endingSoon">Contract ≤6mo</option>
-        </select>
-        {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setFilterSentiment('all'); setFilterStatus('all'); }}>× Clear</span>}
-      </div>
-
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th><button onClick={() => toggleSort('customer')}>Customer{sortIcon('customer')}</button></th>
-              <th><button onClick={() => toggleSort('owner')}>Owner{sortIcon('owner')}</button></th>
-              <th><button onClick={() => toggleSort('sentiment')}>Sentiment{sortIcon('sentiment')}</button></th>
-              <th>Operations</th>
-              <th><button onClick={() => toggleSort('updated')}>Updated{sortIcon('updated')}</button></th>
-              <th><button onClick={() => toggleSort('contractEnd')}>Contract End{sortIcon('contractEnd')}</button></th>
-              <th>Flags</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((row, idx) => {
-              // find original index for flags
-              const origIdx = data.indexOf(row);
-              const sections = allSections[origIdx];
-              const flags = allFlags[origIdx];
-              const isExpanded = expandedRow === origIdx;
-              const hasAlerts = flags.some(f => f.type === 'alert');
-              const hasWarns = flags.some(f => f.type === 'warn');
-              return (
-                <React.Fragment key={row.lob || idx}>
-                  <tr className={`data-row${isExpanded ? ' expanded' : ''}`}
-                    onClick={() => setExpandedRow(isExpanded ? null : origIdx)}>
-                    <td>
-                      <div className="customer-name">{row.customer}</div>
-                      <div className="lob-code">{row.lob}</div>
-                    </td>
-                    <td><div className="owner-name">{row.owner}</div></td>
-                    <td><StatusBadge status={row.sentiment} /></td>
-                    <td><StatusBadge status={row.operations} /></td>
-                    <td>
-                      <div style={{fontSize:'0.78rem', color:'var(--text2)', marginBottom:'3px'}}>{formatDate(row.updated)}</div>
-                      {row.updated && <DateBadge val={row.updated} />}
-                    </td>
-                    <td>
-                      {row.contractEnd
-                        ? <><div style={{fontSize:'0.78rem', color: isWithin6Months(row.contractEnd)||isContractExpired(row.contractEnd) ? 'var(--yellow)' : 'var(--text2)', marginBottom:'3px', fontWeight: isWithin6Months(row.contractEnd)||isContractExpired(row.contractEnd) ? 500 : 400}}>{formatDate(row.contractEnd)}</div>
-                           <ContractEndBadge val={row.contractEnd} /></>
-                        : <span style={{color:'var(--text3)', fontSize:'0.78rem'}}>—</span>}
-                    </td>
-                    <td>
-                      <div className="flags">
-                        {sections.issues && <span className="flag flag-issue">Issues</span>}
-                        {sections.within9mo?.toLowerCase().includes('yes') && <span className="flag flag-renewal">≤9mo</span>}
-                        {(sections.renewalFeedback || '').toLowerCase().match(/cancel|non-renewal|not renewing/) && <span className="flag flag-cancel">Cancel</span>}
-                        {hasAlerts && <span className="flag flag-stale">⚑ Alert</span>}
-                        {!hasAlerts && hasWarns && <span className="flag" style={{background:'var(--yellow-bg)',color:'var(--yellow)'}}>△ Warn</span>}
-                        {notes.getNote(row.lob) && <span className="flag" style={{background:'var(--blue-bg)',color:'var(--blue)'}}>📝</span>}
-                      </div>
-                    </td>
-                    <td style={{color:'var(--text3)', fontSize:'0.8rem'}}>{isExpanded ? '▲' : '▼'}</td>
-                  </tr>
-                  {isExpanded && (
-                    <tr className="expand-row">
-                      <td colSpan={8}>
-                        <ExpandedRow row={row} notes={notes} />
-                      </td>
-                    </tr>
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-        <div className="table-footer">Showing {filtered.length} of {data.length} accounts</div>
-      </div>
-    </div>
-  );
-}
-
 // ── Monday morning view ────────────────────────────────────────────────────
 
 function MondayView({ data, notes }) {
@@ -1168,13 +1207,6 @@ function MondayView({ data, notes }) {
   const renewalItems = useMemo(() => {
     return data.filter((_,i) => allSections[i].within9mo?.toLowerCase().includes('yes'))
       .map((r,_) => ({ row: r, sections: allSections[data.indexOf(r)] }));
-  }, [data, allSections]);
-
-  const contractEndingSoon = useMemo(() => {
-    return data
-      .filter(r => isWithin6Months(r.contractEnd) || isContractExpired(r.contractEnd))
-      .map(r => ({ row: r, sections: allSections[data.indexOf(r)], days: daysUntilContract(r.contractEnd) }))
-      .sort((a, b) => (daysUntilContract(a.row.contractEnd) ?? 999) - (daysUntilContract(b.row.contractEnd) ?? 999));
   }, [data, allSections]);
 
   return (
@@ -1235,7 +1267,7 @@ function MondayView({ data, notes }) {
                 </div>
                 <div className="monday-row-main">
                   <div className="monday-row-customer">{row.customer} <span style={{fontSize:'0.72rem', color:'var(--text3)'}}>{row.owner}</span></div>
-                  {sections.issues && <div className="monday-row-sub" style={{color:'var(--yellow)'}}>{sections.issues.substring(0,120)}{sections.issues.length>120?'…':''}</div>}
+                  {sections.issues && <div className="monday-row-sub" style={{color:'var(--yellow)'}}>{snip(sections.issues, 120)}</div>}
                   {flags.map((f,i) => (
                     <div key={i} className="monday-row-meta" style={{color:'var(--red)'}}>⚑ {f.msg}</div>
                   ))}
@@ -1248,62 +1280,599 @@ function MondayView({ data, notes }) {
           }
         </div>
 
-        {/* Contracts ending within 6 months */}
-        {contractEndingSoon.length > 0 && (
-          <div className="monday-section" style={{gridColumn: contractEndingSoon.length > 3 ? '1/-1' : 'auto'}}>
-            <div className="monday-section-header">
-              <span className="monday-section-title" style={{color:'var(--orange)'}}>📅 Contract End ≤ 6 Months</span>
-              <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)'}}>{contractEndingSoon.length} accounts</span>
-            </div>
-            {contractEndingSoon.map(({row, sections, days}) => {
-              const expired = days !== null && days < 0;
-              return (
-                <div key={row.lob} className="monday-row">
-                  <div style={{display:'flex', flexDirection:'column', gap:'3px', flexShrink:0, alignItems:'center'}}>
-                    <StatusBadge status={row.sentiment} />
-                    <ContractEndBadge val={row.contractEnd} />
-                  </div>
-                  <div className="monday-row-main">
-                    <div className="monday-row-customer">
-                      {row.customer}
-                      <span style={{fontSize:'0.72rem', color:'var(--text3)', marginLeft:'0.4rem'}}>{row.owner}</span>
-                    </div>
-                    <div className="monday-row-meta" style={{color: expired ? 'var(--red)' : 'var(--yellow)'}}>
-                      {expired ? '⚑ Contract expired ' : '⏳ Ends '}{formatDate(row.contractEnd)}
-                      {!expired && ` — ${days}d remaining`}
-                    </div>
-                    {sections.renewalFeedback && <div className="monday-row-sub">{sections.renewalFeedback.substring(0,100)}</div>}
-                    {sections.renewalNextSteps && <div className="monday-row-meta" style={{color:'var(--blue)'}}>Next: {sections.renewalNextSteps.substring(0,100)}</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {/* CSDM-flagged renewals (within9mo = yes in status) */}
+        {/* Renewals */}
         {renewalItems.length > 0 && (
           <div className="monday-section" style={{gridColumn: renewalItems.length > 3 ? '1/-1' : 'auto'}}>
             <div className="monday-section-header">
-              <span className="monday-section-title" style={{color:'var(--orange)'}}>⚑ CSDM-Flagged Renewal ≤ 9 Months</span>
+              <span className="monday-section-title" style={{color:'var(--orange)'}}>⚑ Renewal ≤ 9 Months</span>
               <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)'}}>{renewalItems.length} accounts</span>
             </div>
             {renewalItems.map(({row, sections}) => (
               <div key={row.lob} className="monday-row">
-                <div style={{display:'flex', flexDirection:'column', gap:'3px', flexShrink:0, alignItems:'center'}}>
-                  <StatusBadge status={row.sentiment} />
-                  {row.contractEnd && <ContractEndBadge val={row.contractEnd} />}
-                </div>
+                <StatusBadge status={row.sentiment} />
                 <div className="monday-row-main">
                   <div className="monday-row-customer">{row.customer} <span style={{fontSize:'0.72rem', color:'var(--text3)'}}>{row.owner}</span></div>
-                  {row.contractEnd && <div className="monday-row-meta" style={{color:'var(--text2)'}}>Contract end: {formatDate(row.contractEnd)}</div>}
-                  {sections.renewalFeedback && <div className="monday-row-sub">{sections.renewalFeedback.substring(0,100)}</div>}
-                  {sections.renewalNextSteps && <div className="monday-row-meta" style={{color:'var(--blue)'}}>Next: {sections.renewalNextSteps.substring(0,100)}</div>}
+                  {sections.renewalFeedback && <div className="monday-row-sub">{snip(sections.renewalFeedback, 100)}</div>}
+                  {sections.renewalNextSteps && <div className="monday-row-meta" style={{color:'var(--blue)'}}>Next: {snip(sections.renewalNextSteps, 100)}</div>}
                 </div>
               </div>
             ))}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+// ── Portfolio view ─────────────────────────────────────────────────────────
+
+function DomainPill({ d, showLabel }) {
+  if (!d) return <span className="pill" style={{color:'var(--text3)', background:'var(--surface3)', borderColor:'var(--border)'}}>—</span>;
+  const m = STATE_META[d.state];
+  return (
+    <span className="pill" style={{color:m.color, background:m.bg, borderColor:m.border}} title={`${d.label} — ${d.detail}`}>
+      {m.icon} {showLabel ? d.label : ''}
+    </span>
+  );
+}
+
+function PortfolioView({ data, notes }) {
+  const [groupBy, setGroupBy] = useState('owner');
+  const [domainFilter, setDomainFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [filterOwner, setFilterOwner] = useState('all');
+  const [openAcct, setOpenAcct] = useState(null);
+
+  const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
+
+  const scored = useMemo(() => data.map(r => {
+    const s = parseStatus(r.status);
+    return { row: r, sections: s, domains: scoreDomains(r, s), flags: analyzeAccount(r, s) };
+  }), [data]);
+
+  // Rollup counts per domain
+  const rollups = useMemo(() => DOMAINS.map(dom => {
+    const counts = { good:0, watch:0, risk:0, nodata:0 };
+    scored.forEach(x => { const st = x.domains[dom.key]?.state; if (st) counts[st]++; });
+    return { ...dom, counts };
+  }), [scored]);
+
+  const filtered = useMemo(() => scored.filter(x => {
+    const q = search.toLowerCase();
+    const matchSearch = !search || x.row.customer.toLowerCase().includes(q)
+      || x.row.lob.toLowerCase().includes(q) || x.row.owner.toLowerCase().includes(q);
+    const matchOwner = filterOwner === 'all' || x.row.owner === filterOwner;
+    const st = domainFilter === 'all' ? null : x.domains[domainFilter]?.state;
+    const matchDomain = domainFilter === 'all' || st === 'risk' || st === 'watch' || st === 'nodata';
+    return matchSearch && matchOwner && matchDomain;
+  }), [scored, search, filterOwner, domainFilter]);
+
+  // Group rows, worst-first inside each group
+  const groups = useMemo(() => {
+    const sortFn = (a, b) => {
+      const ra = Math.min(...DOMAINS.map(d => STATE_META[a.domains[d.key]?.state || 'nodata'].rank));
+      const rb = Math.min(...DOMAINS.map(d => STATE_META[b.domains[d.key]?.state || 'nodata'].rank));
+      return ra - rb || a.row.customer.localeCompare(b.row.customer);
+    };
+    if (groupBy === 'none') return [['All accounts', filtered.slice().sort(sortFn)]];
+    const m = {};
+    filtered.forEach(x => { const k = x.row.owner || 'Unassigned'; (m[k] = m[k] || []).push(x); });
+    return Object.entries(m).sort((a,b) => a[0].localeCompare(b[0]))
+      .map(([k, items]) => [k, items.slice().sort(sortFn)]);
+  }, [filtered, groupBy]);
+
+  const hasFilters = search || filterOwner !== 'all' || domainFilter !== 'all';
+
+  return (
+    <div>
+      <div className="rollup-grid">
+        {rollups.map(r => {
+          const total = Object.values(r.counts).reduce((a,b)=>a+b,0) || 1;
+          const active = domainFilter === r.key;
+          return (
+            <div key={r.key} className="rollup-card"
+              style={{cursor:'pointer', borderColor: active ? 'var(--blue)' : 'var(--border)'}}
+              onClick={() => setDomainFilter(active ? 'all' : r.key)}>
+              <div className="rollup-title">{r.label}</div>
+              <div className="rollup-bar">
+                {['risk','watch','nodata','good'].map(st => r.counts[st] > 0 && (
+                  <div key={st} style={{width:`${r.counts[st]/total*100}%`, background:STATE_META[st].color, opacity: st==='nodata'?0.35:1}} />
+                ))}
+              </div>
+              <div className="rollup-legend">
+                {r.counts.risk > 0 && <span style={{color:'var(--red)'}}>{r.counts.risk} risk</span>}
+                {r.counts.watch > 0 && <span style={{color:'var(--yellow)'}}>{r.counts.watch} watch</span>}
+                {r.counts.nodata > 0 && <span style={{color:'var(--text3)'}}>{r.counts.nodata} blank</span>}
+                {r.counts.good > 0 && <span style={{color:'var(--green)'}}>{r.counts.good} ok</span>}
+              </div>
+              <div className="rollup-why">{DOMAIN_KEYS[r.key]}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="filter-bar">
+        <input type="text" placeholder="Search customer, LOB, owner..." value={search} onChange={e => setSearch(e.target.value)} />
+        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)}>
+          <option value="all">All CSDMs</option>
+          {owners.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <select value={groupBy} onChange={e => setGroupBy(e.target.value)}>
+          <option value="owner">Group by CSDM</option>
+          <option value="none">No grouping</option>
+        </select>
+        <select value={domainFilter} onChange={e => setDomainFilter(e.target.value)}>
+          <option value="all">All domains</option>
+          {DOMAINS.map(d => <option key={d.key} value={d.key}>Needs attention: {d.label}</option>)}
+        </select>
+        {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setDomainFilter('all'); }}>× Clear</span>}
+      </div>
+
+      <div className="matrix-wrap">
+        <table className="matrix">
+          <thead>
+            <tr>
+              <th className="acct-col">Account</th>
+              {DOMAINS.map(d => <th key={d.key} title={DOMAIN_KEYS[d.key]}>{d.short}</th>)}
+              <th style={{width:'30px'}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {groups.map(([gname, items]) => (
+              <React.Fragment key={gname}>
+                {groupBy !== 'none' && (
+                  <tr className="grp"><td colSpan={DOMAINS.length + 2}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
+                )}
+                {items.map(x => {
+                  const open = openAcct === x.row.lob;
+                  const fixes = x.flags.filter(f => f.type === 'fix').length;
+                  return (
+                    <React.Fragment key={x.row.lob}>
+                      <tr className={`acct${open?' open':''}`} onClick={() => setOpenAcct(open ? null : x.row.lob)}>
+                        <td>
+                          <div className="customer-name">{x.row.customer}</div>
+                          <div className="lob-code">
+                            {x.row.lob}
+                            {groupBy === 'none' && <span> · {x.row.owner}</span>}
+                            {x.row.updated && isStale(x.row.updated) && <span style={{color:'var(--red)'}}> · off-cadence</span>}
+                            {fixes > 0 && <span style={{color:'var(--orange)'}}> · {fixes} to fix</span>}
+                            {notes.getNote(x.row.lob) && <span style={{color:'var(--blue)'}}> · 📝</span>}
+                          </div>
+                        </td>
+                        {DOMAINS.map(d => {
+                          const dm = x.domains[d.key];
+                          const m = STATE_META[dm?.state || 'nodata'];
+                          return (
+                            <td key={d.key} className="cell" title={dm ? `${d.label}: ${dm.label} — ${dm.detail}` : ''}>
+                              <span className="pill" style={{color:m.color, background:m.bg, borderColor:m.border}}>
+                                {m.icon} {dm?.label || '—'}
+                              </span>
+                              {dm?.detail && dm.detail !== '—' && <div className="cell-note">{dm.detail}</div>}
+                            </td>
+                          );
+                        })}
+                        <td style={{color:'var(--text3)', fontSize:'0.75rem', textAlign:'center'}}>{open ? '▲' : '▼'}</td>
+                      </tr>
+                      {open && (
+                        <tr className="expand-row">
+                          <td colSpan={DOMAINS.length + 2}>
+                            <DomainSummary domains={x.domains} />
+                            <ExpandedRow row={x.row} notes={notes} />
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+        <div className="table-footer">
+          Showing {filtered.length} of {scored.length} accounts · click any row for the full update ·
+          Profitability reflects whether the workbook is linked, not margin health
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Domain scorecard shown at the top of an expanded account
+function DomainSummary({ domains }) {
+  return (
+    <div className="domain-summary">
+      {DOMAINS.map(d => {
+        const dm = domains[d.key];
+        const m = STATE_META[dm?.state || 'nodata'];
+        return (
+          <div key={d.key} className="ds-card" style={{borderLeft:`3px solid ${m.color}`}}>
+            <div className="ds-title">{d.label}</div>
+            <div className="ds-state" style={{color:m.color}}>{m.icon} {dm?.label || '—'}</div>
+            <div className="ds-detail">{dm?.detail || '—'}</div>
+            <div className="ds-why">{DOMAIN_KEYS[d.key]}</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── 1:1 view ───────────────────────────────────────────────────────────────
+
+// Build talking points for one account: what to raise, and what to ask.
+function talkingPoints(row, s, domains, flags) {
+  const pts = [];
+  const risk = DOMAINS.filter(d => domains[d.key]?.state === 'risk');
+  const watch = DOMAINS.filter(d => domains[d.key]?.state === 'watch');
+
+  risk.forEach(d => pts.push({ kind:'risk', domain:d.label, msg: domains[d.key].label, detail: domains[d.key].detail,
+    ask: d.key === 'renewal' ? 'What is the retention or offboarding plan, and who owns it?'
+       : d.key === 'customerHealth' ? 'What is driving this, and what will it take to stabilize?'
+       : d.key === 'serviceReviews' ? 'Why is the customer declining reviews, and how else are we staying close?'
+       : d.key === 'lifecycle' ? 'Is the decommission confirmed, and what is the timeline?'
+       : 'What support do you need here?' }));
+
+  watch.forEach(d => pts.push({ kind:'watch', domain:d.label, msg: domains[d.key].label, detail: domains[d.key].detail,
+    ask: d.key === 'renewal' ? 'Where does the customer actually stand, and when will we know?'
+       : d.key === 'serviceReviews' ? 'When is the next review scheduled?'
+       : d.key === 'lifecycle' ? 'What is the upgrade path and timing?'
+       : 'Anything you need from me on this?' }));
+
+  if (s.issues) pts.push({ kind:'issue', domain:'Open Issues', msg:'Issues logged this week',
+    detail: snip(s.issues, 180), ask:'What is the path to resolution and the ETA?' });
+
+  const alerts = flags.filter(f => f.type === 'alert');
+  alerts.forEach(f => { if (!/cadence|no update date/i.test(f.msg)) pts.push({ kind:'risk', domain:'Alert', msg:f.msg, detail:'', ask:'' }); });
+
+  return pts;
+}
+
+function OneOnOneView({ data, notes }) {
+  const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
+  const [owner, setOwner] = useState(owners[0] || '');
+  const [openAcct, setOpenAcct] = useState(null);
+
+  const mine = useMemo(() => data.filter(d => d.owner === owner).map(r => {
+    const s = parseStatus(r.status);
+    const domains = scoreDomains(r, s);
+    const flags = analyzeAccount(r, s);
+    return { row: r, sections: s, domains, flags, points: talkingPoints(r, s, domains, flags) };
+  }).sort((a,b) => b.points.length - a.points.length), [data, owner]);
+
+  const totalPts = mine.reduce((n,x) => n + x.points.length, 0);
+  const fixCount = mine.reduce((n,x) => n + x.flags.filter(f=>f.type==='fix').length, 0);
+  const staleN = mine.filter(x => isStale(x.row.updated)).length;
+  const quiet = mine.filter(x => x.points.length === 0);
+
+  return (
+    <div>
+      <div className="oo-owner-tabs">
+        {owners.map(o => {
+          const cnt = data.filter(d => d.owner === o).length;
+          return (
+            <div key={o} className={`oo-owner-tab${o===owner?' active':''}`}
+              onClick={() => { setOwner(o); setOpenAcct(null); }}>
+              {o}<span className="cnt">{cnt}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="oo-header">
+        <div style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:'1rem', flexWrap:'wrap'}}>
+          <div>
+            <div style={{fontSize:'1rem', fontWeight:600}}>{owner}</div>
+            <div style={{fontSize:'0.78rem', color:'var(--text2)', marginTop:'2px'}}>
+              {mine.length} accounts · {totalPts} talking point{totalPts!==1?'s':''} · {quiet.length} with nothing flagged
+            </div>
+          </div>
+          <div style={{display:'flex', gap:'0.5rem', fontSize:'0.72rem', fontFamily:'var(--mono)'}}>
+            {staleN > 0 && <span style={{color:'var(--red)'}}>⏰ {staleN} off-cadence</span>}
+            {fixCount > 0 && <span style={{color:'var(--orange)'}}>✎ {fixCount} update fixes</span>}
+          </div>
+        </div>
+      </div>
+
+      {mine.map(x => {
+        const open = openAcct === x.row.lob;
+        const worst = Math.min(...DOMAINS.map(d => STATE_META[x.domains[d.key]?.state || 'nodata'].rank));
+        return (
+          <div key={x.row.lob} className="oo-acct">
+            <div className="oo-acct-head" onClick={() => setOpenAcct(open ? null : x.row.lob)}>
+              <span style={{color: worst===0?'var(--red)':worst===1?'var(--yellow)':'var(--text3)', fontSize:'0.8rem'}}>
+                {worst===0?'⚑':worst===1?'△':'✓'}
+              </span>
+              <div className="oo-acct-name">
+                {x.row.customer}
+                <span style={{fontSize:'0.72rem', color:'var(--text3)', fontWeight:400, marginLeft:'0.4rem'}}>{x.row.lob}</span>
+              </div>
+              <div className="oo-domains">
+                {DOMAINS.map(d => <DomainPill key={d.key} d={x.domains[d.key]} />)}
+              </div>
+              <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)', minWidth:'52px', textAlign:'right'}}>
+                {x.points.length ? `${x.points.length} pt${x.points.length>1?'s':''}` : '—'}
+              </span>
+              <span style={{color:'var(--text3)', fontSize:'0.75rem'}}>{open?'▲':'▼'}</span>
+            </div>
+            {open && (
+              <div className="oo-body">
+                {x.points.length === 0 && <div style={{fontSize:'0.8rem', color:'var(--green)'}}>✓ Nothing flagged — quick confirm and move on</div>}
+                {x.points.map((p, i) => (
+                  <div key={i} className="talk-item">
+                    <span style={{color: p.kind==='risk'?'var(--red)':p.kind==='issue'?'var(--orange)':'var(--yellow)'}}>
+                      {p.kind==='risk'?'⚑':p.kind==='issue'?'!':'△'}
+                    </span>
+                    <div style={{flex:1, minWidth:0}}>
+                      <div><strong style={{fontSize:'0.72rem', fontFamily:'var(--mono)', color:'var(--text3)'}}>{p.domain}</strong> — {p.msg}</div>
+                      {p.detail && <div style={{fontSize:'0.76rem', color:'var(--text2)', marginTop:'2px'}}>{p.detail}</div>}
+                      {p.ask && <div className="ask-q" style={{fontSize:'0.76rem', marginTop:'3px'}}>Ask: {p.ask}</div>}
+                    </div>
+                  </div>
+                ))}
+                {x.flags.filter(f=>f.type==='fix').length > 0 && (
+                  <div style={{marginTop:'0.6rem'}}>
+                    <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>Update quality — mention at the end</div>
+                    {x.flags.filter(f=>f.type==='fix').map((f,i) => (
+                      <div key={i} className="analysis-flag fix"><span className="analysis-flag-icon">✎</span><span>{f.msg}</span></div>
+                    ))}
+                  </div>
+                )}
+                {notes.getNote(x.row.lob) && (
+                  <div style={{marginTop:'0.6rem', fontSize:'0.8rem', background:'var(--blue-bg)', border:'1px solid var(--blue-border)', borderRadius:'5px', padding:'0.45rem 0.6rem', color:'var(--blue)'}}>
+                    📝 {notes.getNote(x.row.lob).text}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Renewals view ──────────────────────────────────────────────────────────
+
+function buildRenewalRows(data) {
+  return data.map(r => {
+    const s = parseStatus(r.status);
+    const end = resolveContractEnd(r, s);
+    // Prefer the real date over the CSDM's free-text answer
+    let within9, w9src;
+    if (end.iso) {
+      const days = Math.round((new Date(end.iso + 'T00:00:00') - new Date()) / 86400000);
+      within9 = days >= 0 && days <= 274;
+      w9src = days < 0 ? 'Contract end passed' : `${Math.round(days/30.44)} months out`;
+    } else {
+      within9 = /yes/i.test(s.within9mo || '');
+      w9src = s.within9mo ? snip(s.within9mo, 40) : null;
+    }
+    const fbLow = (s.renewalFeedback || '').toLowerCase();
+    let posture = 'Not stated';
+    if (/non-renewal|not renewing|cancell?ation|will not renew/.test(fbLow)) posture = 'Non-renewal';
+    else if (/at risk|lower price|discount|reduc/.test(fbLow)) posture = 'At risk / price pressure';
+    else if (/renew/.test(fbLow)) posture = 'Renewing';
+    else if (s.renewalFeedback && isPlaceholder(s.renewalFeedback)) posture = 'TBD';
+    return { row: r, s, end, within9, w9src, posture };
+  });
+}
+
+const POSTURE_COLOR = {
+  'Non-renewal': 'var(--red)',
+  'At risk / price pressure': 'var(--red)',
+  'TBD': 'var(--yellow)',
+  'Not stated': 'var(--text3)',
+  'Renewing': 'var(--green)',
+};
+
+function exportRenewalsXlsx(rows, today) {
+  if (typeof XLSX === 'undefined') { alert('Excel library did not load — check your connection and reload.'); return; }
+  const aoa = [[
+    'Customer','LOB','CSDM','Contract End','Contract End (as written)','Date Precision','Date Source',
+    'Within 9 Months','Months Out','CSDM Answer','Customer Posture','Customer Feedback','Next Steps',
+    'Renewal Link','Sentiment','Operations','Renewal Section (full text)'
+  ]];
+  rows.forEach(({ row, s, end, within9, w9src, posture }) => {
+    // Real Date object when we have an exact date so Excel can sort and filter;
+    // blank otherwise, with the raw text preserved in the next column.
+    const dateCell = end.iso ? new Date(end.iso + 'T00:00:00') : '';
+    const monthsOut = end.iso
+      ? Math.round((new Date(end.iso + 'T00:00:00') - new Date()) / 86400000 / 30.44)
+      : '';
+    aoa.push([
+      row.customer, row.lob, row.owner,
+      dateCell, end.label || '',
+      end.precision === 'none' ? '' : end.precision, end.src || '',
+      within9 ? 'Yes' : 'No', monthsOut, s.within9mo || '', posture,
+      s.renewalFeedback || '', s.renewalNextSteps || '',
+      s.renewalLink || '', row.sentiment, row.operations,
+      s.renewalRaw || ''
+    ]);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true, dateNF: 'yyyy-mm-dd' });
+  ws['!cols'] = [
+    {wch:34},{wch:12},{wch:18},{wch:14},{wch:20},{wch:12},{wch:20},
+    {wch:14},{wch:11},{wch:24},{wch:22},{wch:46},{wch:46},{wch:30},{wch:11},{wch:11},{wch:80}
+  ];
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{r:0,c:0}, e:{r:aoa.length-1, c:aoa[0].length-1} }) };
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Renewals');
+  const stamp = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `LOB-Renewals-${stamp}.xlsx`);
+}
+
+function RenewalsView({ data }) {
+  const [search, setSearch] = useState('');
+  const [filterOwner, setFilterOwner] = useState('all');
+  const [scope, setScope] = useState('all');
+  const [open, setOpen] = useState(null);
+
+  const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
+  const all = useMemo(() => buildRenewalRows(data), [data]);
+
+  const filtered = useMemo(() => {
+    let out = all.filter(x => {
+      const q = search.toLowerCase();
+      const ms = !search || x.row.customer.toLowerCase().includes(q)
+        || x.row.lob.toLowerCase().includes(q) || x.row.owner.toLowerCase().includes(q);
+      const mo = filterOwner === 'all' || x.row.owner === filterOwner;
+      let sc = true;
+      if (scope === 'within9') sc = x.within9;
+      else if (scope === 'risk') sc = x.posture === 'Non-renewal' || x.posture === 'At risk / price pressure';
+      else if (scope === 'nodate') sc = x.end.precision === 'none';
+      else if (scope === 'dated') sc = x.end.precision !== 'none';
+      return ms && mo && sc;
+    });
+    // Soonest dated first, then partial dates, then undated
+    return out.sort((a,b) => {
+      if (a.end.iso && b.end.iso) return a.end.iso.localeCompare(b.end.iso);
+      if (a.end.iso) return -1;
+      if (b.end.iso) return 1;
+      const pa = a.end.precision === 'none' ? 1 : 0, pb = b.end.precision === 'none' ? 1 : 0;
+      return pa - pb || a.row.customer.localeCompare(b.row.customer);
+    });
+  }, [all, search, filterOwner, scope]);
+
+  const stats = useMemo(() => ({
+    within9: all.filter(x => x.within9).length,
+    risk: all.filter(x => x.posture === 'Non-renewal' || x.posture === 'At risk / price pressure').length,
+    dated: all.filter(x => x.end.precision === 'exact').length,
+    partial: all.filter(x => x.end.precision === 'quarter' || x.end.precision === 'year').length,
+    nodate: all.filter(x => x.end.precision === 'none').length,
+  }), [all]);
+
+  const hasFilters = search || filterOwner !== 'all' || scope !== 'all';
+  const today = new Date().toISOString().slice(0,10);
+  const hasField = data.some(d => d.contractEnd);
+
+  return (
+    <div>
+      {!hasField && (
+        <div style={{background:'var(--yellow-bg)', border:'1px solid var(--yellow-border)', borderRadius:'8px',
+          padding:'0.6rem 0.9rem', marginBottom:'1rem', fontSize:'0.8rem', color:'var(--yellow)'}}>
+          ⚠ <strong>Contract end column not in this export.</strong> Add
+          {' '}<code style={{fontFamily:'var(--mono)', fontSize:'0.75rem'}}>u_customer_relationship.u_contract_end</code>
+          {' '}to your ServiceNow report and every date below becomes exact. Until then dates are read out of the
+          renewal text, which only covers {stats.dated + stats.partial} of {all.length} accounts.
+        </div>
+      )}
+      <div className="stats-row">
+        <div className="stat-card" style={{cursor:'default'}}>
+          <div className="stat-label">Accounts</div><div className="stat-value">{all.length}</div>
+        </div>
+        <div className={`stat-card yellow ${scope==='within9'?'active':''}`} onClick={() => setScope(scope==='within9'?'all':'within9')}>
+          <div className="stat-label">Within 9 Mo</div><div className="stat-value">{stats.within9}</div>
+        </div>
+        <div className={`stat-card red ${scope==='risk'?'active':''}`} onClick={() => setScope(scope==='risk'?'all':'risk')}>
+          <div className="stat-label">At Risk</div><div className="stat-value">{stats.risk}</div>
+        </div>
+        <div className={`stat-card green ${scope==='dated'?'active':''}`} onClick={() => setScope(scope==='dated'?'all':'dated')}>
+          <div className="stat-label">Has Date</div><div className="stat-value">{stats.dated + stats.partial}</div>
+        </div>
+        <div className={`stat-card orange ${scope==='nodate'?'active':''}`} onClick={() => setScope(scope==='nodate'?'all':'nodate')}>
+          <div className="stat-label">No Date</div><div className="stat-value">{stats.nodate}</div>
+        </div>
+      </div>
+
+      <div className="filter-bar">
+        <input type="text" placeholder="Search customer, LOB, CSDM..." value={search} onChange={e => setSearch(e.target.value)} />
+        <select value={filterOwner} onChange={e => setFilterOwner(e.target.value)}>
+          <option value="all">All CSDMs</option>
+          {owners.map(o => <option key={o} value={o}>{o}</option>)}
+        </select>
+        <select value={scope} onChange={e => setScope(e.target.value)}>
+          <option value="all">All accounts</option>
+          <option value="within9">Within 9 months</option>
+          <option value="risk">At risk / non-renewal</option>
+          <option value="dated">Has a date</option>
+          <option value="nodate">No date recorded</option>
+        </select>
+        {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setScope('all'); }}>× Clear</span>}
+        <button className="btn btn-export" style={{marginLeft:'auto'}}
+          onClick={() => exportRenewalsXlsx(filtered, today)}>
+          ⬇ Export to Excel ({filtered.length})
+        </button>
+      </div>
+
+      <div className="matrix-wrap">
+        <table className="matrix">
+          <thead>
+            <tr>
+              <th className="acct-col">Account</th>
+              <th style={{textAlign:'left', minWidth:'120px'}}>Contract End</th>
+              <th style={{textAlign:'left', minWidth:'100px'}}>Within 9 Mo</th>
+              <th style={{textAlign:'left', minWidth:'150px'}}>Posture</th>
+              <th style={{textAlign:'left'}}>Renewal Notes</th>
+              <th style={{width:'30px'}}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(x => {
+              const isOpen = open === x.row.lob;
+              return (
+                <React.Fragment key={x.row.lob}>
+                  <tr className={`acct${isOpen?' open':''}`} onClick={() => setOpen(isOpen ? null : x.row.lob)}>
+                    <td>
+                      <div className="customer-name">{x.row.customer}</div>
+                      <div className="lob-code">{x.row.lob} · {x.row.owner}</div>
+                    </td>
+                    <td>
+                      {x.end.label
+                        ? <>
+                            <div style={{fontFamily:'var(--mono)', fontSize:'0.8rem'}}>{x.end.label}</div>
+                            <div className="lob-code" style={{color: x.end.precision==='exact'?'var(--text3)':'var(--yellow)'}}>
+                              {x.end.precision === 'exact' ? x.end.src : `${x.end.precision} only`}
+                            </div>
+                          </>
+                        : <span style={{color:'var(--text3)', fontStyle:'italic', fontSize:'0.78rem'}}>Not stated</span>}
+                    </td>
+                    <td>
+                      <div style={{fontSize:'0.78rem', color: x.within9 ? 'var(--yellow)' : 'var(--text2)', fontWeight: x.within9 ? 600 : 400}}>
+                        {x.end.iso ? (x.within9 ? 'Yes' : 'No') : (x.s.within9mo ? (x.within9 ? 'Yes' : 'No') : '—')}
+                      </div>
+                      {x.w9src && <div className="lob-code">{x.w9src}</div>}
+                      {x.end.iso && x.s.within9mo && /yes/i.test(x.s.within9mo) !== x.within9 && (
+                        <div className="lob-code" style={{color:'var(--orange)'}}>CSDM said: {snip(x.s.within9mo, 26)}</div>
+                      )}
+                    </td>
+                    <td>
+                      <span className="pill" style={{color:POSTURE_COLOR[x.posture], background:'transparent', borderColor:'var(--border)'}}>
+                        {x.posture}
+                      </span>
+                    </td>
+                    <td style={{fontSize:'0.76rem', color:'var(--text2)', maxWidth:'330px'}}>
+                      {x.s.renewalFeedback && <div>{snip(x.s.renewalFeedback, 110)}</div>}
+                      {x.s.renewalNextSteps && <div style={{color:'var(--blue)', marginTop:'2px'}}>Next: {snip(x.s.renewalNextSteps, 90)}</div>}
+                      {!x.s.renewalFeedback && !x.s.renewalNextSteps && <em style={{color:'var(--text3)'}}>nothing recorded</em>}
+                    </td>
+                    <td style={{color:'var(--text3)', fontSize:'0.75rem', textAlign:'center'}}>{isOpen ? '▲' : '▼'}</td>
+                  </tr>
+                  {isOpen && (
+                    <tr className="expand-row">
+                      <td colSpan={6}>
+                        <div style={{padding:'0.9rem 1.25rem'}}>
+                          <div className="update-box">
+                            <div className="update-box-head">
+                              <span>Renewal Status — as submitted</span>
+                              {x.s.renewalLink && <a href={x.s.renewalLink} target="_blank" rel="noopener noreferrer"
+                                style={{color:'var(--blue)', textTransform:'none', letterSpacing:0}}>Renewal form ↗</a>}
+                            </div>
+                            <div className="update-box-body">{x.s.renewalRaw || '(no renewal section in this update)'}</div>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        <div className="table-footer">
+          {filtered.length} of {all.length} accounts · {hasField
+            ? `contract end dates from the u_customer_relationship.u_contract_end field`
+            : `${stats.dated} exact, ${stats.partial} quarter/year only, ${stats.nodate} with no date — parsed from renewal text`}
+        </div>
       </div>
     </div>
   );
@@ -1459,6 +2028,12 @@ function App() {
   const attnCount = data.filter(r => r.sentiment !== 'Green' || r.operations !== 'Green').length;
   const flaggedCount = allFlags.filter(f => f.some(x => x.type === 'alert')).length;
   const noDateCol = data.every(d => !d.updated);
+  const portfolioRisk = data.filter((r,i) => {
+    const dm = scoreDomains(r, allSections[i]);
+    return DOMAINS.some(d => dm[d.key]?.state === 'risk');
+  }).length;
+  const renewalRisk = buildRenewalRows(data)
+    .filter(x => x.posture === 'Non-renewal' || x.posture === 'At risk / price pressure').length;
 
   return (
     <div className="app">
@@ -1488,15 +2063,25 @@ function App() {
             {staleCount > 0 && <span className="badge badge-alert">{staleCount}</span>}
             {staleCount === 0 && attnCount > 0 && <span className="badge badge-warn">{attnCount}</span>}
           </div>
-          <div className={`tab${tab==='table'?' active':''}`} onClick={() => setTab('table')}>
-            All Accounts
+          <div className={`tab${tab==='portfolio'?' active':''}`} onClick={() => setTab('portfolio')}>
+            Portfolio
             <span className="badge">{data.length}</span>
+            {portfolioRisk > 0 && <span className="badge badge-alert">{portfolioRisk}</span>}
+          </div>
+          <div className={`tab${tab==='renewals'?' active':''}`} onClick={() => setTab('renewals')}>
+            Renewals
+            {renewalRisk > 0 && <span className="badge badge-alert">{renewalRisk}</span>}
+          </div>
+          <div className={`tab${tab==='oneonone'?' active':''}`} onClick={() => setTab('oneonone')}>
+            1:1 Prep
           </div>
         </div>
 
         <div className="content">
           {tab === 'monday' && <MondayView data={data} notes={notes} />}
-          {tab === 'table' && <TableView data={data} notes={notes} />}
+          {tab === 'portfolio' && <PortfolioView data={data} notes={notes} />}
+          {tab === 'renewals' && <RenewalsView data={data} />}
+          {tab === 'oneonone' && <OneOnOneView data={data} notes={notes} />}
         </div>
       </div>
     </div>
@@ -1504,6 +2089,50 @@ function App() {
 }
 
 ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+
+<script>
+// Compile the JSX above explicitly with the CLASSIC runtime.
+// Newer @babel/standalone releases default preset-react to the AUTOMATIC
+// runtime, which emits `import { jsx } from "react/jsx-runtime"`. An import
+// statement in a non-module script throws immediately and the page renders
+// blank. Passing runtime:'classic' pins the behaviour regardless of which
+// Babel version the CDN happens to serve.
+(function () {
+  function fail(msg, detail) {
+    document.getElementById('root').innerHTML =
+      '<div style="max-width:640px;margin:4rem auto;font-family:system-ui,sans-serif;' +
+      'background:#fbe9e9;border:1px solid #f0c4c4;border-radius:10px;padding:1.5rem;color:#7a1c1c">' +
+      '<h2 style="margin:0 0 .5rem;font-size:1.05rem">Dashboard failed to start</h2>' +
+      '<p style="margin:0 0 .75rem;font-size:.9rem">' + msg + '</p>' +
+      (detail ? '<pre style="white-space:pre-wrap;font-size:.75rem;background:#fff;padding:.75rem;' +
+      'border-radius:6px;overflow:auto;margin:0">' + String(detail).replace(/[<>]/g, '') + '</pre>' : '') +
+      '</div>';
+  }
+
+  if (typeof React === 'undefined' || typeof ReactDOM === 'undefined' ||
+      typeof Babel === 'undefined' || typeof Papa === 'undefined') {
+    fail('A required library did not load. This page needs internet access to fetch React, Babel and PapaParse from unpkg.com — check your connection or corporate proxy, then reload.');
+    return;
+  }
+
+  var source = document.getElementById('app-source').textContent;
+  var compiled;
+  try {
+    compiled = Babel.transform(source, {
+      presets: [['react', { runtime: 'classic' }]]
+    }).code;
+  } catch (e) {
+    fail('The app code could not be compiled.', e && e.message);
+    return;
+  }
+
+  try {
+    new Function('React', 'ReactDOM', 'Papa', compiled)(React, ReactDOM, Papa);
+  } catch (e) {
+    fail('The app crashed while starting up.', (e && e.stack) || e);
+  }
+})();
 </script>
 </body>
 </html>
