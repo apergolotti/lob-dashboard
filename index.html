@@ -264,6 +264,13 @@
     .ds-detail { font-size: 0.72rem; color: var(--text2); margin-top: 2px; line-height: 1.35; }
     .ds-why { font-size: 0.6rem; color: var(--text3); margin-top: 0.35rem; border-top: 1px solid var(--border); padding-top: 0.3rem; line-height: 1.3; }
 
+    /* Compact template/update-quality chips */
+    .qc-list { display: flex; flex-wrap: wrap; gap: 0.25rem; }
+    .qc-item { font-size: 0.68rem; line-height: 1.25; padding: 0.12rem 0.4rem; border-radius: 3px;
+      border: 1px solid; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; cursor: help; }
+    .qc-tmpl { background: #f3eefc; border-color: #ddccf5; color: var(--purple); }
+    .qc-fix  { background: #fdf2e8; border-color: #f0d0a8; color: var(--orange); }
+
     /* Reference attributes in an expanded account */
     .attr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.5rem 0.9rem;
       background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.7rem 0.85rem; }
@@ -717,7 +724,14 @@ function indexStatus(text) {
         }
         current = { key: hit.def.key, def: hit.def, rawLabel, exact: hit.exact,
                     section, line: i, buf: [rest] };
-        if (!hit.def.multiline) flush();
+        // Single-line fields normally end at the label line. But CSDMs often
+        // write the label alone and put the value underneath —
+        //   "Current Versions:"
+        //   "PROD stable on Viya 2026.06"
+        // — so when nothing follows the separator, keep collecting until the
+        // next label. Treating that as blank produced false "not documented"
+        // flags on updates that plainly had the information.
+        if (!hit.def.multiline && String(rest).trim() !== '') flush();
         return;
       }
       // Unrecognised label ends any multiline capture so we don't swallow it
@@ -846,10 +860,13 @@ function phaseScope(row) {
   return { phase, state, scored: false, reason: `${phase || '—'} / ${state || '—'} — not scored`, kind: 'other' };
 }
 
-// A project sitting in Implementation on both the LOB phase and the CREL state
-// isn't expected to post a weekly update yet, so it can never be "off cadence".
+// A project sitting in Implementation on both the LOB phase and the CREL
+// state isn't expected to post a weekly update yet. Neither is a pointer
+// record ("IGNORE LOB", "SEE MPM") whose status is deliberately maintained
+// elsewhere. Neither can be off cadence, and neither gets coached.
 function expectsUpdate(row) {
-  return phaseScope(row).kind !== 'impl';
+  const k = phaseScope(row).kind;
+  return k !== 'impl' && k !== 'pointer';
 }
 
 function isOffCadence(row) {
@@ -930,12 +947,10 @@ function checkTemplate(status, row) {
   });
 
   // Deliberately NOT flagged: section ordering, heading wording variants,
-  // separator style (":" / ";" / "?"), capitalisation, and spelling slips.
-  // The values are read wherever they appear, so those are formatting noise
-  // rather than a process gap. Only genuinely absent sections and lines count.
-
-  if (!/-{5,}/.test(status))
-    d.push({ sev: 'minor', msg: 'Missing the dashed divider between the weekly update and the standing sections' });
+  // separator style (":" / ";" / "?"), capitalisation, spelling slips, and the
+  // dashed divider. The values are read wherever they appear, so those are
+  // formatting noise rather than a process gap. Only genuinely absent sections
+  // and lines count against a CSDM.
 
   return d;
 }
@@ -1025,6 +1040,9 @@ function analyzeAccount(row, sections) {
   }
 
   // ── Update quality (CSDM to fix) ──────────────────────────────────────────
+  // Skipped for anything not expected to report (Implementation, or a pointer
+  // record tracked elsewhere) — blank template fields are not a gap there.
+  if (!expectsUpdate(row)) return flags;
   const missing = computeMissing(row.status);
   const mk = new Set(missing.map(m => m.key));
 
@@ -1061,9 +1079,9 @@ function analyzeAccount(row, sections) {
   if (otherMissing.length)
     flags.push({ type: 'fix', msg: `Also blank: ${otherMissing.map(m => m.label).join(', ')}` });
 
-  // Template compliance (CSDM not following the standard format)
-  checkTemplate(row.status, row).forEach(dev =>
-    flags.push({ type: 'template', sev: dev.sev, msg: dev.msg }));
+  // Template adherence is deliberately NOT repeated here. It has its own tab,
+  // where it is scored by phase and reviewed account by account. Duplicating
+  // it into the 1:1 material buried the coaching points under format nits.
 
   return flags;
 }
@@ -1379,6 +1397,10 @@ function generateExport(owner, accounts, notes, today) {
         if (p.detail) t += `      ${snip(p.detail, 200)}\n`;
         if (p.ask) t += `      ASK: ${p.ask}\n`;
       });
+    } else if (!expectsUpdate(a)) {
+      t += `\nTALKING POINTS: — ${phaseScope(a).kind === 'pointer'
+        ? 'tracked outside LOB.Details (IGNORE LOB / SEE MPM)'
+        : 'Implementation phase, no weekly update expected yet'}\n`;
     } else {
       t += `\nTALKING POINTS: ✓ Nothing flagged — quick confirm and move on\n`;
     }
@@ -1395,11 +1417,6 @@ function generateExport(owner, accounts, notes, today) {
     if (fixes.length > 0) {
       t += `\nCSDM TO FIX IN NEXT UPDATE:\n`;
       fixes.forEach(f => t += `  ✎ ${f.msg}\n`);
-    }
-    const tmpl = flags.filter(f => f.type === 'template');
-    if (tmpl.length > 0) {
-      t += `\nNOT FOLLOWING THE TEMPLATE:\n`;
-      tmpl.forEach(f => t += `  ▤ ${f.sev === 'major' ? '(!) ' : ''}${f.msg}\n`);
     }
     const note = notes[a.lob];
     if (note) t += `\n📝 MY NOTE: ${note.text}\n`;
@@ -1460,7 +1477,6 @@ function AnalysisFlags({ flags }) {
   if (!flags.length) return <p className="no-flags">✓ No issues flagged</p>;
   const discuss = flags.filter(f => f.type === 'alert' || f.type === 'warn' || f.type === 'info');
   const fixes   = flags.filter(f => f.type === 'fix');
-  const template = flags.filter(f => f.type === 'template');
   return (
     <div>
       {discuss.length > 0 && (
@@ -1481,17 +1497,6 @@ function AnalysisFlags({ flags }) {
             <div key={i} className="analysis-flag fix">
               <span className="analysis-flag-icon">✎</span>
               <span>{f.msg}</span>
-            </div>
-          ))}
-        </>
-      )}
-      {template.length > 0 && (
-        <>
-          <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginTop: (discuss.length || fixes.length) ? '0.5rem' : 0, marginBottom:'0.3rem'}}>Not Following the Template</div>
-          {template.map((f, i) => (
-            <div key={i} className="analysis-flag template">
-              <span className="analysis-flag-icon">▤</span>
-              <span>{f.sev === 'major' ? <strong>{f.msg}</strong> : f.msg}</span>
             </div>
           ))}
         </>
@@ -1528,57 +1533,14 @@ function FieldBox({ label, value, isLink, missing, isIssue, wide }) {
 
 // ── Expanded row ───────────────────────────────────────────────────────────
 
-function ExpandedRow({ row, notes }) {
-  const s = parseStatus(row.status);
-  const flags = analyzeAccount(row, s);
-  const missing = computeMissing(row.status);
-  const missingLabels = missing.map(m => m.label);
-  const [noteText, setNoteText] = useState(notes.getNote(row.lob)?.text || '');
-  const [saved, setSaved] = useState(false);
-
-  function saveNote() {
-    notes.setNote(row.lob, noteText);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
-  }
-
+// The raw status text, shown last in an expanded account. Template adherence
+// is not repeated here — that lives on the Compliance tab.
+function ExpandedRow({ row }) {
   return (
     <div style={{padding:'1rem 1.25rem'}}>
-      {/* Manager analysis + notes across the top */}
-      <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:'0.6rem', marginBottom:'0.9rem'}} className="expand-top">
-        <div className="panel-section">
-          <h4>Manager Analysis</h4>
-          <AnalysisFlags flags={flags} />
-        </div>
-        <div className="panel-section">
-          <h4>My Notes (1:1 prep)</h4>
-          <textarea
-            className="notes-textarea"
-            value={noteText}
-            onChange={e => setNoteText(e.target.value)}
-            placeholder="Add your 1:1 talking points..."
-          />
-          <div className="notes-controls">
-            <button className="btn btn-ghost" style={{fontSize:'0.75rem', padding:'0.3rem 0.7rem'}} onClick={saveNote}>Save</button>
-            {notes.getNote(row.lob) && (
-              <button className="btn btn-ghost" style={{fontSize:'0.75rem', padding:'0.3rem 0.7rem', color:'var(--red)'}}
-                onClick={() => { notes.deleteNote(row.lob); setNoteText(''); }}>Clear</button>
-            )}
-            {saved && <span className="notes-saved">✓ Saved</span>}
-          </div>
-        </div>
-      </div>
-
-
-      {/* Full update as submitted, in one box */}
       <div className="update-box">
         <div className="update-box-head">
           <span>Update as submitted</span>
-          {missingLabels.length > 0 && (
-            <span className="update-missing">
-              {missingLabels.length} field{missingLabels.length !== 1 ? 's' : ''} left blank: {missingLabels.join(', ')}
-            </span>
-          )}
         </div>
         <div className="update-box-body">{row.status || '(no status text provided)'}</div>
       </div>
@@ -1624,11 +1586,6 @@ function MondayView({ data, notes }) {
     });
     return items;
   }, [data, allSections, allFlags]);
-
-  const renewalItems = useMemo(() => {
-    return data.filter((_,i) => allSections[i].within9mo?.toLowerCase().includes('yes'))
-      .map((r,_) => ({ row: r, sections: allSections[data.indexOf(r)] }));
-  }, [data, allSections]);
 
   return (
     <div>
@@ -1701,25 +1658,6 @@ function MondayView({ data, notes }) {
           }
         </div>
 
-        {/* Renewals */}
-        {renewalItems.length > 0 && (
-          <div className="monday-section" style={{gridColumn: renewalItems.length > 3 ? '1/-1' : 'auto'}}>
-            <div className="monday-section-header">
-              <span className="monday-section-title" style={{color:'var(--orange)'}}>⚑ Renewal ≤ 9 Months</span>
-              <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)'}}>{renewalItems.length} accounts</span>
-            </div>
-            {renewalItems.map(({row, sections}) => (
-              <div key={row.lob} className="monday-row">
-                <StatusBadge status={row.sentiment} />
-                <div className="monday-row-main">
-                  <div className="monday-row-customer">{row.customer} <span style={{fontSize:'0.72rem', color:'var(--text3)'}}>{row.owner}</span></div>
-                  {sections.renewalFeedback && <div className="monday-row-sub">{snip(sections.renewalFeedback, 100)}</div>}
-                  {sections.renewalNextSteps && <div className="monday-row-meta" style={{color:'var(--blue)'}}>Next: {snip(sections.renewalNextSteps, 100)}</div>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -1749,7 +1687,10 @@ function PortfolioView({ data, notes }) {
 
   const scored = useMemo(() => data.map(r => {
     const s = parseStatus(r.status);
-    return { row: r, sections: s, domains: scoreDomains(r, s), flags: analyzeAccount(r, s),
+    const domains = scoreDomains(r, s);
+    const flags = analyzeAccount(r, s);
+    return { row: r, sections: s, domains, flags,
+             points: talkingPoints(r, s, domains, flags),
              scope: phaseScope(r), platform: platformInfo(r), hosting: hostingInfo(r),
              restrict: restrictionInfo(r) };
   }), [data]);
@@ -1868,6 +1809,26 @@ function PortfolioView({ data, notes }) {
         {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setDomainFilter('all'); setPhaseFilter('all'); setAttrFilter('all'); }}>× Clear</span>}
       </div>
 
+      {filterOwner !== 'all' && (() => {
+        const pts = filtered.reduce((n,x) => n + x.points.length, 0);
+        const quiet = filtered.filter(x => x.points.length === 0).length;
+        const stale = filtered.filter(x => isOffCadence(x.row)).length;
+        const fixes = filtered.reduce((n,x) => n + x.flags.filter(f=>f.type==='fix').length, 0);
+        return (
+          <div className="oo-header" style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:'1rem', flexWrap:'wrap'}}>
+            <div>
+              <div style={{fontSize:'1rem', fontWeight:600}}>{filterOwner}</div>
+              <div style={{fontSize:'0.78rem', color:'var(--text2)', marginTop:'2px'}}>
+                {filtered.length} account{filtered.length!==1?'s':''} · {pts} talking point{pts!==1?'s':''} · {quiet} with nothing flagged
+              </div>
+            </div>
+            <div style={{display:'flex', gap:'0.6rem', fontSize:'0.72rem', fontFamily:'var(--mono)'}}>
+              {stale > 0 && <span style={{color:'var(--red)'}}>⏰ {stale} off-cadence</span>}
+              {fixes > 0 && <span style={{color:'var(--orange)'}}>✎ {fixes} update fixes</span>}
+            </div>
+          </div>
+        );
+      })()}
       <div className="matrix-wrap">
         <table className="matrix">
           <thead>
@@ -1889,7 +1850,6 @@ function PortfolioView({ data, notes }) {
                 )}
                 {items.map(x => {
                   const open = openAcct === x.row.lob;
-                  const fixes = x.flags.filter(f => f.type === 'fix').length;
                   return (
                     <React.Fragment key={x.row.lob}>
                       <tr className={`acct${open?' open':''}`} onClick={() => setOpenAcct(open ? null : x.row.lob)}>
@@ -1905,7 +1865,7 @@ function PortfolioView({ data, notes }) {
                             {x.row.lob}
                             {groupBy === 'none' && <span> · {x.row.owner}</span>}
                             {x.row.updated && isOffCadence(x.row) && <span style={{color:'var(--red)'}}> · off-cadence</span>}
-                            {fixes > 0 && <span style={{color:'var(--orange)'}}> · {fixes} to fix</span>}
+                            {x.points.length > 0 && <span style={{color:'var(--yellow)'}}> · {x.points.length} talking pt{x.points.length>1?'s':''}</span>}
                             {notes.getNote(x.row.lob) && <span style={{color:'var(--blue)'}}> · 📝</span>}
                           </div>
                         </td>
@@ -1958,7 +1918,11 @@ function PortfolioView({ data, notes }) {
                           <td colSpan={DOMAINS.length + 6}>
                             <AccountAttributes x={x} />
                             <DomainSummary domains={x.domains} />
-                            <ExpandedRow row={x.row} notes={notes} />
+                            <CoachingPanel points={x.points} flags={x.flags} row={x.row} />
+                            <div style={{padding:'0.9rem 1.25rem 0'}}>
+                              <NoteEditor lob={x.row.lob} notes={notes} />
+                            </div>
+                            <ExpandedRow row={x.row} />
                           </td>
                         </tr>
                       )}
@@ -2008,6 +1972,108 @@ function AccountAttributes({ x }) {
   );
 }
 
+// The 1:1 half of an expanded account: what to raise, the question to ask,
+// and — compactly, at the end — the housekeeping items. Template adherence is
+// shown here for context alongside the content gaps; the Compliance tab is
+// still where it gets scored and reviewed in bulk.
+// Dedupe key for housekeeping chips. The template check and the blank-field
+// check word the same item differently ("Number of service interruptions" vs
+// "Service interruptions count"), so strip filler words and plurals before
+// comparing.
+function qcKey(label) {
+  return normLabel(label)
+    .replace(/\b(number of|count|the|of|a)\b/g, ' ')
+    .split(/\s+/).filter(Boolean)
+    .map(word => word.replace(/s$/, ''))
+    .join(' ');
+}
+
+function CoachingPanel({ points, flags, row }) {
+  const scope = phaseScope(row);
+  // Implementation projects (Implementation on both LOB phase and CREL state)
+  // aren't expected to maintain LOB.Details yet, so there is nothing to coach:
+  // no talking points, no template or update-quality items. The status they do
+  // have is still shown below, unjudged.
+  if (!expectsUpdate(row)) {
+    return (
+      <div style={{padding:'0.9rem 1.25rem 0'}}>
+        <div style={{fontSize:'0.78rem', color:'var(--text3)', background:'var(--surface)',
+          border:'1px solid var(--border)', borderRadius:'6px', padding:'0.55rem 0.75rem'}}>
+          {scope.kind === 'pointer'
+            ? 'Tracked outside LOB.Details (marked IGNORE LOB / SEE MPM) — nothing is flagged or scored here.'
+            : 'Implementation phase — no weekly update expected yet, so nothing is flagged or scored here.'}
+        </div>
+      </div>
+    );
+  }
+  const fixes = flags.filter(f => f.type === 'fix');
+  const tmpl = scope.scored ? checkTemplate(row.status, row) : [];
+  // A missing heading also reads as a blank field, so the same item can arrive
+  // from both checks. Show it once, keyed on the compressed label.
+  const seen = new Set();
+  const items = [];
+  tmpl.forEach(f => { const l = qcShort(f.msg), k = qcKey(l);
+    if (!seen.has(k)) { seen.add(k); items.push({ kind: 'tmpl', label: l, full: f.msg }); } });
+  fixes.forEach(f => { const l = qcShort(f.msg), k = qcKey(l);
+    if (!seen.has(k)) { seen.add(k); items.push({ kind: 'fix', label: l, full: f.msg }); } });
+  return (
+    <div style={{padding:'0.9rem 1.25rem 0'}}>
+      <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>
+        Talking points
+      </div>
+      {points.length === 0 && (
+        <div style={{fontSize:'0.8rem', color:'var(--green)', marginBottom:'0.3rem'}}>✓ Nothing flagged — quick confirm and move on</div>
+      )}
+      {points.map((p, i) => (
+        <div key={i} className="talk-item">
+          <span style={{color: p.kind==='risk'?'var(--red)':p.kind==='issue'?'var(--orange)':'var(--yellow)'}}>
+            {p.kind==='risk'?'⚑':p.kind==='issue'?'!':'△'}
+          </span>
+          <div style={{flex:1, minWidth:0}}>
+            <div><strong style={{fontSize:'0.72rem', fontFamily:'var(--mono)', color:'var(--text3)'}}>{p.domain}</strong> — {p.msg}</div>
+            {p.detail && <div style={{fontSize:'0.76rem', color:'var(--text2)', marginTop:'2px'}}>{p.detail}</div>}
+            {p.ask && <div className="ask-q" style={{fontSize:'0.76rem', marginTop:'3px'}}>Ask: {p.ask}</div>}
+          </div>
+        </div>
+      ))}
+      {items.length > 0 && (
+        <div style={{marginTop:'0.7rem'}}>
+          <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>
+            Template &amp; update quality
+            <span style={{color:'var(--text3)', opacity:0.7}}> — {items.length} item{items.length!==1?'s':''}, mention at the end</span>
+          </div>
+          <div className="qc-list">
+            {items.map((it,i) => (
+              <span key={i} className={`qc-item qc-${it.kind}`} title={it.full}>
+                {it.kind === 'tmpl' ? '▤' : '✎'} {it.label}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Compress a housekeeping message to a chip-sized label; the full text stays
+// on hover so nothing is lost.
+function qcShort(msg) {
+  let m = String(msg);
+  m = m.replace(/^Missing the "(.+?)" (heading|section header)$/, (_, f, k) =>
+        (k === 'section header' ? f + ' section' : f));
+  m = m.replace(/^(.+?) not filled in — CSDM to complete$/, '$1');
+  m = m.replace(/ section blank — CSDM to complete$/, '');
+  m = m.replace(/ blank — CSDM to complete$/, '');
+  m = m.replace(/^Also blank: /, '');
+  m = m.replace(/ not documented$/, '');
+  m = m.replace(/ not answered — required field$/, '');
+  m = m.replace(/ — CSDM to fill in actual versions$/, '');
+  m = m.replace(/ still contains template placeholder text$/, ' — placeholder');
+  m = m.replace(/ is "TBD" — needs.*$/, ' — TBD');
+  m = m.replace(/^Weekly Accomplishments looks like filler.*$/, 'Weekly Accomplishments — filler');
+  return snip(m, 42);
+}
+
 function DomainSummary({ domains }) {
   return (
     <div className="domain-summary">
@@ -2031,6 +2097,9 @@ function DomainSummary({ domains }) {
 
 // Build talking points for one account: what to raise, and what to ask.
 function talkingPoints(row, s, domains, flags) {
+  // Nothing to coach on a project that isn't expected to report — still in
+  // Implementation, or a pointer record tracked elsewhere.
+  if (!expectsUpdate(row)) return [];
   const pts = [];
   const risk = DOMAINS.filter(d => domains[d.key]?.state === 'risk');
   const watch = DOMAINS.filter(d => domains[d.key]?.state === 'watch');
@@ -2062,6 +2131,60 @@ function talkingPoints(row, s, domains, flags) {
 // template. A "compliant" account has zero template deviations. Pointer /
 // ignored records (MPD, MPT, anything "SEE MPM" or "IGNORE LOB") are excluded
 // from the counts so they don't unfairly penalize an owner.
+// One off-template account: what's missing, then the status as submitted.
+// Shared by the per-CSDM panel and the Review tab so both look identical.
+function OffTemplateAccount({ r, open, onToggle, showOwner }) {
+  return (
+    <div className="oo-acct">
+      <div className="oo-acct-head" onClick={onToggle}>
+        <span style={{color: r.devs.length === 0 ? 'var(--green)' : r.major ? 'var(--red)' : 'var(--yellow)', fontSize:'0.8rem'}}>
+          {r.devs.length === 0 ? '✓' : '▤'}
+        </span>
+        <div className="oo-acct-name">
+          {r.row.customer}
+          <span style={{fontSize:'0.72rem', color:'var(--text3)', fontWeight:400, marginLeft:'0.4rem'}}>
+            {r.row.lob}{showOwner ? ` · ${r.row.owner}` : ''} · {r.row.phase}
+          </span>
+        </div>
+        <span style={{fontFamily:'var(--mono)', fontSize:'0.72rem'}}>
+          {r.devs.length === 0 && <span style={{color:'var(--green)'}}>follows template</span>}
+          {r.major > 0 && <span style={{color:'var(--red)'}}>{r.major} major</span>}
+          {r.major > 0 && r.minor > 0 && <span style={{color:'var(--text3)'}}> · </span>}
+          {r.minor > 0 && <span style={{color:'var(--yellow)'}}>{r.minor} minor</span>}
+        </span>
+        <span style={{color:'var(--text3)', fontSize:'0.75rem'}}>{open?'▲':'▼'}</span>
+      </div>
+      {open && (
+        <div className="oo-body">
+          {r.devs.length > 0 && (
+            <>
+              <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>
+                What's off template
+              </div>
+              {r.devs.map((d, i) => (
+                <div key={i} className="analysis-flag template" style={{marginBottom:'0.3rem'}}>
+                  <span className="analysis-flag-icon">▤</span>
+                  <span>{d.sev === 'major' ? <strong>{d.msg}</strong> : d.msg}</span>
+                </div>
+              ))}
+            </>
+          )}
+          <div style={{marginTop: r.devs.length ? '0.7rem' : 0}} className="update-box">
+            <div className="update-box-head">
+              <span>LOB.Details status — as submitted</span>
+              <button className="btn btn-ghost" style={{fontSize:'0.7rem', padding:'0.2rem 0.5rem', textTransform:'none', letterSpacing:0}}
+                onClick={e => { e.stopPropagation(); navigator.clipboard && navigator.clipboard.writeText(r.row.status || ''); }}>
+                ⎘ Copy
+              </button>
+            </div>
+            <div className="update-box-body">{r.row.status || '(no status text provided)'}</div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComplianceView({ data }) {
   const [openOwner, setOpenOwner] = useState(null);
   const [view, setView] = useState('bycsdm');   // bycsdm | review
@@ -2091,18 +2214,15 @@ function ComplianceView({ data }) {
 
   const stats = useMemo(() => {
     const byOwner = {};
-    inScope.forEach(({ row, devs }) => {
+    inScope.forEach(rec => {
+      const { row, devs } = rec;
       const owner = row.owner || 'Unassigned';
-      if (!byOwner[owner]) byOwner[owner] = { owner, total: 0, compliant: 0, major: 0, minor: 0, tally: new Map(), accounts: [] };
+      if (!byOwner[owner]) byOwner[owner] = { owner, total: 0, compliant: 0, major: 0, minor: 0, accounts: [] };
       const o = byOwner[owner];
       o.total++;
       if (devs.length === 0) o.compliant++;
-      devs.forEach(dv => {
-        if (dv.sev === 'major') o.major++; else o.minor++;
-        if (!o.tally.has(dv.msg)) o.tally.set(dv.msg, { sev: dv.sev, n: 0 });
-        o.tally.get(dv.msg).n++;
-      });
-      o.accounts.push({ lob: row.lob, customer: row.customer, devs });
+      devs.forEach(dv => { if (dv.sev === 'major') o.major++; else o.minor++; });
+      o.accounts.push(rec);
     });
     return Object.values(byOwner).map(o => ({ ...o, pct: o.total ? Math.round((o.compliant / o.total) * 100) : 100 }))
       .sort((a, b) => b.pct - a.pct || a.major - b.major || a.owner.localeCompare(b.owner));
@@ -2178,8 +2298,6 @@ function ComplianceView({ data }) {
           <tbody>
             {stats.map(o => {
               const open = openOwner === o.owner;
-              const items = [...o.tally.entries()].sort((a, b) =>
-                (a[1].sev === 'major' ? 0 : 1) - (b[1].sev === 'major' ? 0 : 1) || b[1].n - a[1].n);
               return (
                 <React.Fragment key={o.owner}>
                   <tr className={`acct${open?' open':''}`} onClick={() => setOpenOwner(open ? null : o.owner)}>
@@ -2199,33 +2317,27 @@ function ComplianceView({ data }) {
                     <tr className="expand-row">
                       <td colSpan={6}>
                         <div style={{padding:'0.9rem 1.25rem'}}>
-                          {items.length === 0 ? (
-                            <div className="no-flags">✓ Every scored account follows the template — nothing to coach.</div>
-                          ) : (
-                            <>
-                              <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>Most common deviations</div>
-                              {items.map(([msg, meta], k) => (
-                                <div key={k} className="analysis-flag template" style={{marginBottom:'0.3rem'}}>
-                                  <span className="analysis-flag-icon">▤</span>
-                                  <span>{meta.sev === 'major' ? <strong>{msg}</strong> : msg} <span style={{color:'var(--text3)'}}>({meta.n} account{meta.n!==1?'s':''})</span></span>
+                          {(() => {
+                            const off = o.accounts.filter(a => a.devs.length > 0)
+                              .sort((a,b) => b.major - a.major || b.devs.length - a.devs.length
+                                           || a.row.customer.localeCompare(b.row.customer));
+                            const okCount = o.total - off.length;
+                            if (off.length === 0)
+                              return <div className="no-flags">✓ Every scored account follows the template — nothing to coach.</div>;
+                            return (
+                              <>
+                                <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>
+                                  {off.length} account{off.length!==1?'s':''} off template
+                                  {okCount > 0 && <span style={{color:'var(--green)'}}> · {okCount} following it</span>}
                                 </div>
-                              ))}
-                              <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', margin:'0.7rem 0 0.4rem'}}>By account</div>
-                              <div style={{display:'flex', flexWrap:'wrap', gap:'0.4rem'}}>
-                                {o.accounts.slice().sort((a,b) => b.devs.length - a.devs.length).map(a => (
-                                  <span key={a.lob} className="pill" title={a.devs.map(d=>d.msg).join(' · ') || 'Follows the template'}
-                                    style={{cursor: a.devs.length ? 'pointer' : 'default',
-                                      background: a.devs.length ? 'var(--surface3)' : 'var(--green-bg)',
-                                      borderColor: a.devs.length ? 'var(--border)' : 'var(--green-border)',
-                                      color: a.devs.length ? 'var(--text2)' : 'var(--green)'}}
-                                    onClick={e => { if (!a.devs.length) return; e.stopPropagation();
-                                      setView('review'); setReviewOwner(o.owner); setReviewSev('all'); setSearch(''); setOpenAcct(a.lob); }}>
-                                    {a.devs.length ? '▤' : '✓'} {a.customer} <span style={{opacity:0.7}}>{a.devs.length ? a.devs.length : ''}</span>
-                                  </span>
+                                {off.map(a => (
+                                  <OffTemplateAccount key={a.row.lob} r={a}
+                                    open={openAcct === a.row.lob}
+                                    onToggle={() => setOpenAcct(openAcct === a.row.lob ? null : a.row.lob)} />
                                 ))}
-                              </div>
-                            </>
-                          )}
+                              </>
+                            );
+                          })()}
                         </div>
                       </td>
                     </tr>
@@ -2267,194 +2379,55 @@ function ComplianceView({ data }) {
           </div></div>
         )}
 
-        {reviewList.map(r => {
-          const open = openAcct === r.row.lob;
-          return (
-            <div key={r.row.lob} className="oo-acct">
-              <div className="oo-acct-head" onClick={() => setOpenAcct(open ? null : r.row.lob)}>
-                <span style={{color: r.major ? 'var(--red)' : 'var(--yellow)', fontSize:'0.8rem'}}>▤</span>
-                <div className="oo-acct-name">
-                  {r.row.customer}
-                  <span style={{fontSize:'0.72rem', color:'var(--text3)', fontWeight:400, marginLeft:'0.4rem'}}>
-                    {r.row.lob} · {r.row.owner} · {r.row.phase}
-                  </span>
-                </div>
-                <span style={{fontFamily:'var(--mono)', fontSize:'0.72rem'}}>
-                  {r.major > 0 && <span style={{color:'var(--red)'}}>{r.major} major</span>}
-                  {r.major > 0 && r.minor > 0 && <span style={{color:'var(--text3)'}}> · </span>}
-                  {r.minor > 0 && <span style={{color:'var(--yellow)'}}>{r.minor} minor</span>}
-                </span>
-                <span style={{color:'var(--text3)', fontSize:'0.75rem'}}>{open?'▲':'▼'}</span>
-              </div>
-              {open && (
-                <div className="oo-body">
-                  <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>
-                    What's off template
-                  </div>
-                  {r.devs.map((d, i) => (
-                    <div key={i} className="analysis-flag template" style={{marginBottom:'0.3rem'}}>
-                      <span className="analysis-flag-icon">▤</span>
-                      <span>{d.sev === 'major' ? <strong>{d.msg}</strong> : d.msg}</span>
-                    </div>
-                  ))}
-                  <div style={{marginTop:'0.7rem'}} className="update-box">
-                    <div className="update-box-head">
-                      <span>LOB.Details status — as submitted</span>
-                      <button className="btn btn-ghost" style={{fontSize:'0.7rem', padding:'0.2rem 0.5rem', textTransform:'none', letterSpacing:0}}
-                        onClick={e => { e.stopPropagation(); navigator.clipboard && navigator.clipboard.writeText(r.row.status || ''); }}>
-                        ⎘ Copy
-                      </button>
-                    </div>
-                    <div className="update-box-body">{r.row.status || '(no status text provided)'}</div>
-                  </div>
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {reviewList.map(r => (
+          <OffTemplateAccount key={r.row.lob} r={r} showOwner
+            open={openAcct === r.row.lob}
+            onToggle={() => setOpenAcct(openAcct === r.row.lob ? null : r.row.lob)} />
+        ))}
       </div>
       )}
     </div>
   );
 }
 
-function OneOnOneView({ data, notes }) {
-  const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
-  const [owner, setOwner] = useState(owners[0] || '');
-  const [openAcct, setOpenAcct] = useState(null);
+// Per-account 1:1 notes. Lives here rather than on Portfolio because this is
+// where notes get written and read, and they flow straight into the OneNote
+// export. Stored in the browser only.
+function NoteEditor({ lob, notes }) {
+  const existing = notes.getNote(lob);
+  const [text, setText] = useState(existing?.text || '');
+  const [open, setOpen] = useState(!!existing);
+  const [saved, setSaved] = useState(false);
 
-  // The manager filter can change the roster underneath us — fall back to the
-  // first available CSDM instead of showing an empty panel.
-  const current = owners.includes(owner) ? owner : (owners[0] || '');
-  useEffect(() => { if (!owners.includes(owner)) { setOwner(owners[0] || ''); setOpenAcct(null); } }, [owners.join('|')]);
+  useEffect(() => { const n = notes.getNote(lob); setText(n?.text || ''); setOpen(!!n); }, [lob]);
 
-  const mine = useMemo(() => data.filter(d => d.owner === current).map(r => {
-    const s = parseStatus(r.status);
-    const domains = scoreDomains(r, s);
-    const flags = analyzeAccount(r, s);
-    return { row: r, sections: s, domains, flags, points: talkingPoints(r, s, domains, flags) };
-  }).sort((a,b) => b.points.length - a.points.length), [data, current]);
+  function save() {
+    notes.setNote(lob, text);
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  }
 
-  const totalPts = mine.reduce((n,x) => n + x.points.length, 0);
-  const fixCount = mine.reduce((n,x) => n + x.flags.filter(f=>f.type==='fix').length, 0);
-  const staleN = mine.filter(x => isOffCadence(x.row)).length;
-  const templateN = mine.filter(x => x.flags.some(f=>f.type==='template')).length;
-  const quiet = mine.filter(x => x.points.length === 0);
+  if (!open) return (
+    <div style={{marginTop:'0.6rem'}}>
+      <span className="clear-link" style={{fontSize:'0.75rem'}} onClick={() => setOpen(true)}>+ Add a note</span>
+    </div>
+  );
 
   return (
-    <div>
-      <div className="oo-owner-tabs">
-        {owners.map(o => {
-          const cnt = data.filter(d => d.owner === o).length;
-          return (
-            <div key={o} className={`oo-owner-tab${o===current?' active':''}`}
-              onClick={() => { setOwner(o); setOpenAcct(null); }}>
-              {o}<span className="cnt">{cnt}</span>
-            </div>
-          );
-        })}
+    <div style={{marginTop:'0.6rem'}}>
+      <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>
+        My note
       </div>
-
-      <div className="oo-header">
-        <div style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:'1rem', flexWrap:'wrap'}}>
-          <div>
-            <div style={{fontSize:'1rem', fontWeight:600}}>{current}</div>
-            <div style={{fontSize:'0.78rem', color:'var(--text2)', marginTop:'2px'}}>
-              {mine.length} accounts · {totalPts} talking point{totalPts!==1?'s':''} · {quiet.length} with nothing flagged
-            </div>
-          </div>
-          <div style={{display:'flex', gap:'0.5rem', fontSize:'0.72rem', fontFamily:'var(--mono)'}}>
-            {staleN > 0 && <span style={{color:'var(--red)'}}>⏰ {staleN} off-cadence</span>}
-            {fixCount > 0 && <span style={{color:'var(--orange)'}}>✎ {fixCount} update fixes</span>}
-            {templateN > 0 && <span style={{color:'var(--purple)'}}>▤ {templateN} off-template</span>}
-          </div>
-        </div>
+      <textarea className="notes-textarea" value={text} onChange={e => setText(e.target.value)}
+        placeholder="Talking points for this account..." />
+      <div className="notes-controls">
+        <button className="btn btn-ghost" style={{fontSize:'0.75rem', padding:'0.3rem 0.7rem'}} onClick={save}>Save</button>
+        {existing && (
+          <button className="btn btn-ghost" style={{fontSize:'0.75rem', padding:'0.3rem 0.7rem', color:'var(--red)'}}
+            onClick={() => { notes.deleteNote(lob); setText(''); setOpen(false); }}>Clear</button>
+        )}
+        {saved && <span className="notes-saved">✓ Saved</span>}
       </div>
-
-      {templateN > 0 && (() => {
-        const seen = new Map();
-        mine.forEach(x => x.flags.filter(f => f.type === 'template').forEach(f => {
-          if (!seen.has(f.msg)) seen.set(f.msg, { sev: f.sev, n: 0 });
-          seen.get(f.msg).n++;
-        }));
-        const items = [...seen.entries()].sort((a, b) =>
-          (a[1].sev === 'major' ? 0 : 1) - (b[1].sev === 'major' ? 0 : 1) || b[1].n - a[1].n);
-        return (
-          <div style={{background:'#f3eefc', border:'1px solid #ddccf5', borderRadius:'8px', padding:'0.7rem 0.9rem', marginBottom:'1rem'}}>
-            <div style={{fontSize:'0.8rem', fontWeight:600, color:'var(--purple)', marginBottom:'0.4rem'}}>
-              ▤ Template coaching — {owner} is off the standard format on {templateN} of {mine.length} account{mine.length!==1?'s':''}
-            </div>
-            {items.map(([msg, meta], i) => (
-              <div key={i} style={{fontSize:'0.76rem', color:'var(--text2)', marginTop:'2px'}}>
-                • {meta.sev === 'major' ? <strong>{msg}</strong> : msg} <span style={{color:'var(--text3)'}}>({meta.n} account{meta.n!==1?'s':''})</span>
-              </div>
-            ))}
-          </div>
-        );
-      })()}
-
-      {mine.map(x => {
-        const open = openAcct === x.row.lob;
-        const worst = Math.min(...DOMAINS.map(d => STATE_META[x.domains[d.key]?.state || 'nodata'].rank));
-        return (
-          <div key={x.row.lob} className="oo-acct">
-            <div className="oo-acct-head" onClick={() => setOpenAcct(open ? null : x.row.lob)}>
-              <span style={{color: worst===0?'var(--red)':worst===1?'var(--yellow)':'var(--text3)', fontSize:'0.8rem'}}>
-                {worst===0?'⚑':worst===1?'△':'✓'}
-              </span>
-              <div className="oo-acct-name">
-                {x.row.customer}
-                <span style={{fontSize:'0.72rem', color:'var(--text3)', fontWeight:400, marginLeft:'0.4rem'}}>{x.row.lob}</span>
-              </div>
-              <div className="oo-domains">
-                {DOMAINS.map(d => <DomainPill key={d.key} d={x.domains[d.key]} />)}
-              </div>
-              <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)', minWidth:'52px', textAlign:'right'}}>
-                {x.points.length ? `${x.points.length} pt${x.points.length>1?'s':''}` : '—'}
-              </span>
-              <span style={{color:'var(--text3)', fontSize:'0.75rem'}}>{open?'▲':'▼'}</span>
-            </div>
-            {open && (
-              <div className="oo-body">
-                {x.points.length === 0 && <div style={{fontSize:'0.8rem', color:'var(--green)'}}>✓ Nothing flagged — quick confirm and move on</div>}
-                {x.points.map((p, i) => (
-                  <div key={i} className="talk-item">
-                    <span style={{color: p.kind==='risk'?'var(--red)':p.kind==='issue'?'var(--orange)':'var(--yellow)'}}>
-                      {p.kind==='risk'?'⚑':p.kind==='issue'?'!':'△'}
-                    </span>
-                    <div style={{flex:1, minWidth:0}}>
-                      <div><strong style={{fontSize:'0.72rem', fontFamily:'var(--mono)', color:'var(--text3)'}}>{p.domain}</strong> — {p.msg}</div>
-                      {p.detail && <div style={{fontSize:'0.76rem', color:'var(--text2)', marginTop:'2px'}}>{p.detail}</div>}
-                      {p.ask && <div className="ask-q" style={{fontSize:'0.76rem', marginTop:'3px'}}>Ask: {p.ask}</div>}
-                    </div>
-                  </div>
-                ))}
-                {x.flags.filter(f=>f.type==='fix').length > 0 && (
-                  <div style={{marginTop:'0.6rem'}}>
-                    <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>Update quality — mention at the end</div>
-                    {x.flags.filter(f=>f.type==='fix').map((f,i) => (
-                      <div key={i} className="analysis-flag fix"><span className="analysis-flag-icon">✎</span><span>{f.msg}</span></div>
-                    ))}
-                  </div>
-                )}
-                {x.flags.filter(f=>f.type==='template').length > 0 && (
-                  <div style={{marginTop:'0.6rem'}}>
-                    <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.3rem'}}>Not following the template</div>
-                    {x.flags.filter(f=>f.type==='template').map((f,i) => (
-                      <div key={i} className="analysis-flag template"><span className="analysis-flag-icon">▤</span><span>{f.sev==='major' ? <strong>{f.msg}</strong> : f.msg}</span></div>
-                    ))}
-                  </div>
-                )}
-                {notes.getNote(x.row.lob) && (
-                  <div style={{marginTop:'0.6rem', fontSize:'0.8rem', background:'var(--blue-bg)', border:'1px solid var(--blue-border)', borderRadius:'5px', padding:'0.45rem 0.6rem', color:'var(--blue)'}}>
-                    📝 {notes.getNote(x.row.lob).text}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -2920,16 +2893,13 @@ function App() {
             {staleCount === 0 && attnCount > 0 && <span className="badge badge-warn">{attnCount}</span>}
           </div>
           <div className={`tab${tab==='portfolio'?' active':''}`} onClick={() => setTab('portfolio')}>
-            Portfolio
+            Portfolio &amp; 1:1
             <span className="badge">{data.length}</span>
             {portfolioRisk > 0 && <span className="badge badge-alert">{portfolioRisk}</span>}
           </div>
           <div className={`tab${tab==='renewals'?' active':''}`} onClick={() => setTab('renewals')}>
             Renewals
             {renewalRisk > 0 && <span className="badge badge-alert">{renewalRisk}</span>}
-          </div>
-          <div className={`tab${tab==='oneonone'?' active':''}`} onClick={() => setTab('oneonone')}>
-            1:1 Prep
           </div>
           <div className={`tab${tab==='compliance'?' active':''}`} onClick={() => setTab('compliance')}>
             Compliance
@@ -2946,7 +2916,6 @@ function App() {
           {tab === 'monday' && <MondayView data={data} notes={notes} />}
           {tab === 'portfolio' && <PortfolioView data={data} notes={notes} />}
           {tab === 'renewals' && <RenewalsView data={data} />}
-          {tab === 'oneonone' && <OneOnOneView data={data} notes={notes} />}
           {tab === 'compliance' && <ComplianceView data={data} />}
           </>)}
         </div>
