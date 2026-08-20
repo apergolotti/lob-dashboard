@@ -399,6 +399,7 @@ const COLUMN_MAP = {
   customer:    ['u_customer_relationship.u_customer_account', 'u_lob.u_customer_account',
                 'u_customer_account', 'customer_account', 'customer'],
   owner:       ['u_project_owner', 'assigned_to', 'owner', 'u_csdm'],
+  manager:     ['assigned_to.manager', 'u_manager', 'manager'],
   sentiment:   ['u_lob.u_lob_details.u_status_overall', 'u_status_overall', 'status_overall'],
   operations:  ['u_lob.u_lob_details.u_status_operations', 'u_status_operations', 'status_operations'],
   updated:     ['u_lob.u_lob_details.sys_updated_on', 'sys_updated_on', 'sys_updated', 'updated'],
@@ -845,6 +846,16 @@ function phaseScope(row) {
   return { phase, state, scored: false, reason: `${phase || '—'} / ${state || '—'} — not scored`, kind: 'other' };
 }
 
+// A project sitting in Implementation on both the LOB phase and the CREL state
+// isn't expected to post a weekly update yet, so it can never be "off cadence".
+function expectsUpdate(row) {
+  return phaseScope(row).kind !== 'impl';
+}
+
+function isOffCadence(row) {
+  return expectsUpdate(row) && isStale(row.updated);
+}
+
 function isPointerLob(row) {
   if (!row) return false;
   const s = (row.status || '');
@@ -941,10 +952,14 @@ function analyzeAccount(row, sections) {
           currentVersions, weeklyWins } = sections;
 
   // ── Cadence ──────────────────────────────────────────────────────────────
-  if (!row.updated || days === 999)
-    flags.push({ type: 'alert', msg: 'No update date recorded — was LOB Details updated?' });
-  else if (isStale(row.updated))
-    flags.push({ type: 'alert', msg: `Last updated ${weekdayName(row.updated)}, ${formatDate(row.updated)} (${days}d ago) — off the Wed/Thu cadence` });
+  // Implementation-phase projects aren't expected to post weekly yet, so no
+  // cadence flag applies to them at all.
+  if (expectsUpdate(row)) {
+    if (!row.updated || days === 999)
+      flags.push({ type: 'alert', msg: 'No update date recorded — was LOB Details updated?' });
+    else if (isOffCadence(row))
+      flags.push({ type: 'alert', msg: `Last updated ${weekdayName(row.updated)}, ${formatDate(row.updated)} (${days}d ago) — off the Wed/Thu cadence` });
+  }
 
   if (!row.status || row.status.trim().length < 50)
     flags.push({ type: 'alert', msg: 'Status field is empty or very thin — needs meaningful content' });
@@ -952,9 +967,9 @@ function analyzeAccount(row, sections) {
   // The CSDM stamps a "Date:" at the top of the template. If the record was
   // touched on cadence but that date is stale, the content is likely carried
   // over from a previous week rather than genuinely refreshed.
-  if (sections.reportedDate) {
+  if (sections.reportedDate && expectsUpdate(row)) {
     const rd = parseDate(sections.reportedDate);
-    if (rd && isStale(sections.reportedDate) && row.updated && !isStale(row.updated))
+    if (rd && isStale(sections.reportedDate) && row.updated && !isOffCadence(row))
       flags.push({ type: 'warn', msg: `Record updated on cadence but the update is dated ${formatDate(sections.reportedDate)} — is this content carried over from a prior week?` });
   }
 
@@ -1321,7 +1336,7 @@ function generateExport(owner, accounts, notes, today) {
     t += `⏰ CADENCE: not checked — this export has no sys_updated_on column.\n`;
     t += `   Add that field in ServiceNow to track Wed/Thu update compliance.\n\n\n`;
   } else {
-    const stale = accounts.filter(a => isStale(a.updated));
+    const stale = accounts.filter(a => isOffCadence(a));
     if (stale.length > 0) {
       t += `⏰ OFF-CADENCE UPDATES (not updated on Wed/Thu)\n`;
       t += `${'─'.repeat(60)}\n`;
@@ -1581,7 +1596,9 @@ function MondayView({ data, notes }) {
   const staleByOwner = useMemo(() => {
     const map = {};
     data.forEach((r, i) => {
-      if (isStale(r.updated)) {
+      // Projects still in Implementation on both phase and state aren't
+      // expected to post a weekly update yet, so they can't be "missed".
+      if (isOffCadence(r)) {
         if (!map[r.owner]) map[r.owner] = [];
         map[r.owner].push({ row: r, days: daysAgo(r.updated) });
       }
@@ -1887,7 +1904,7 @@ function PortfolioView({ data, notes }) {
                           <div className="lob-code">
                             {x.row.lob}
                             {groupBy === 'none' && <span> · {x.row.owner}</span>}
-                            {x.row.updated && isStale(x.row.updated) && <span style={{color:'var(--red)'}}> · off-cadence</span>}
+                            {x.row.updated && isOffCadence(x.row) && <span style={{color:'var(--red)'}}> · off-cadence</span>}
                             {fixes > 0 && <span style={{color:'var(--orange)'}}> · {fixes} to fix</span>}
                             {notes.getNote(x.row.lob) && <span style={{color:'var(--blue)'}}> · 📝</span>}
                           </div>
@@ -2306,16 +2323,21 @@ function OneOnOneView({ data, notes }) {
   const [owner, setOwner] = useState(owners[0] || '');
   const [openAcct, setOpenAcct] = useState(null);
 
-  const mine = useMemo(() => data.filter(d => d.owner === owner).map(r => {
+  // The manager filter can change the roster underneath us — fall back to the
+  // first available CSDM instead of showing an empty panel.
+  const current = owners.includes(owner) ? owner : (owners[0] || '');
+  useEffect(() => { if (!owners.includes(owner)) { setOwner(owners[0] || ''); setOpenAcct(null); } }, [owners.join('|')]);
+
+  const mine = useMemo(() => data.filter(d => d.owner === current).map(r => {
     const s = parseStatus(r.status);
     const domains = scoreDomains(r, s);
     const flags = analyzeAccount(r, s);
     return { row: r, sections: s, domains, flags, points: talkingPoints(r, s, domains, flags) };
-  }).sort((a,b) => b.points.length - a.points.length), [data, owner]);
+  }).sort((a,b) => b.points.length - a.points.length), [data, current]);
 
   const totalPts = mine.reduce((n,x) => n + x.points.length, 0);
   const fixCount = mine.reduce((n,x) => n + x.flags.filter(f=>f.type==='fix').length, 0);
-  const staleN = mine.filter(x => isStale(x.row.updated)).length;
+  const staleN = mine.filter(x => isOffCadence(x.row)).length;
   const templateN = mine.filter(x => x.flags.some(f=>f.type==='template')).length;
   const quiet = mine.filter(x => x.points.length === 0);
 
@@ -2325,7 +2347,7 @@ function OneOnOneView({ data, notes }) {
         {owners.map(o => {
           const cnt = data.filter(d => d.owner === o).length;
           return (
-            <div key={o} className={`oo-owner-tab${o===owner?' active':''}`}
+            <div key={o} className={`oo-owner-tab${o===current?' active':''}`}
               onClick={() => { setOwner(o); setOpenAcct(null); }}>
               {o}<span className="cnt">{cnt}</span>
             </div>
@@ -2336,7 +2358,7 @@ function OneOnOneView({ data, notes }) {
       <div className="oo-header">
         <div style={{display:'flex', alignItems:'baseline', justifyContent:'space-between', gap:'1rem', flexWrap:'wrap'}}>
           <div>
-            <div style={{fontSize:'1rem', fontWeight:600}}>{owner}</div>
+            <div style={{fontSize:'1rem', fontWeight:600}}>{current}</div>
             <div style={{fontSize:'0.78rem', color:'var(--text2)', marginTop:'2px'}}>
               {mine.length} accounts · {totalPts} talking point{totalPts!==1?'s':''} · {quiet.length} with nothing flagged
             </div>
@@ -2739,7 +2761,7 @@ function ExportModal({ data, notes, onClose }) {
           </div>
           {ownerMap.map(([owner, accounts]) => {
             const ySentiment = accounts.filter(a => a.sentiment !== 'Green').length;
-            const stale = accounts.filter(a => isStale(a.updated)).length;
+            const stale = accounts.filter(a => isOffCadence(a)).length;
             const issueCount = accounts.filter(a => parseStatus(a.status).issues).length;
             return (
               <div key={owner} className="export-owner-row">
@@ -2821,27 +2843,35 @@ function FileUploader({ onLoaded }) {
 // ── App root ───────────────────────────────────────────────────────────────
 
 function App() {
-  const [data, setData] = useState(null);
+  const [allData, setAllData] = useState(null);
   const [fileName, setFileName] = useState('');
   const [tab, setTab] = useState('monday');
   const [showExport, setShowExport] = useState(false);
+  const [manager, setManager] = useState('all');
   const notes = useNotes();
 
-  if (!data) return <FileUploader onLoaded={(d, name) => { setData(d); setFileName(name); }} />;
+  if (!allData) return <FileUploader onLoaded={(d, name) => { setAllData(d); setFileName(name); setManager('all'); }} />;
+
+  // One global filter, applied before anything else, so every tab, badge and
+  // export reflects the selected manager's book.
+  const managers = [...new Set(allData.map(d => d.manager))].filter(Boolean).sort();
+  const data = manager === 'all' ? allData : allData.filter(d => d.manager === manager);
+  const setData = setAllData;
 
   const allSections = data.map(r => parseStatus(r.status));
   const allFlags = data.map((r,i) => analyzeAccount(r, allSections[i]));
-  const staleCount = data.filter(d => isStale(d.updated)).length;
+  const staleCount = data.filter(d => isOffCadence(d)).length;
   const attnCount = data.filter(r => r.sentiment !== 'Green' || r.operations !== 'Green').length;
   const flaggedCount = allFlags.filter(f => f.some(x => x.type === 'alert')).length;
-  const noDateCol = data.every(d => !d.updated);
+  const noDateCol = data.length > 0 && data.every(d => !d.updated);
   const portfolioRisk = data.filter((r,i) => {
     const dm = scoreDomains(r, allSections[i]);
     return DOMAINS.some(d => dm[d.key]?.state === 'risk');
   }).length;
   const renewalRisk = buildRenewalRows(data)
     .filter(x => x.posture === 'Non-renewal' || x.posture === 'At risk / price pressure').length;
-  const offTemplateCount = data.filter(r => !isPointerLob(r) && checkTemplate(r.status, r).length > 0).length;
+  // Matches the Compliance tab: only scored (Operations/Hybrid) accounts count
+  const offTemplateCount = data.filter(r => phaseScope(r).scored && checkTemplate(r.status, r).length > 0).length;
 
   return (
     <div className="app">
@@ -2850,6 +2880,24 @@ function App() {
         <div className="topbar-left">
           <span className="brand">LOB Dashboard</span>
           <span className="file-chip">{fileName}</span>
+          {managers.length > 0 && (
+            <div style={{display:'flex', alignItems:'center', gap:'0.4rem'}}>
+              <span style={{fontSize:'0.72rem', color:'var(--text3)', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.05em'}}>Manager</span>
+              <select value={manager} onChange={e => setManager(e.target.value)}
+                style={{background:'var(--surface2)', border:'1px solid ' + (manager==='all' ? 'var(--border)' : 'var(--blue)'),
+                  borderRadius:'6px', color: manager==='all' ? 'var(--text)' : 'var(--blue)',
+                  padding:'0.3rem 0.55rem', fontSize:'0.8rem', fontFamily:'var(--sans)',
+                  fontWeight: manager==='all' ? 400 : 600, outline:'none'}}>
+                <option value="all">All managers ({allData.length})</option>
+                {managers.map(m => (
+                  <option key={m} value={m}>{m} ({allData.filter(d => d.manager === m).length})</option>
+                ))}
+              </select>
+              {manager !== 'all' && (
+                <span className="clear-link" onClick={() => setManager('all')} style={{fontSize:'0.72rem'}}>× All</span>
+              )}
+            </div>
+          )}
         </div>
         <div className="topbar-right">
           <button className="btn btn-export" onClick={() => setShowExport(true)}>⬆ Export for OneNote</button>
@@ -2890,11 +2938,17 @@ function App() {
         </div>
 
         <div className="content">
+          {data.length === 0 ? (
+            <div className="matrix-wrap"><div className="monday-empty">
+              No accounts for {manager}. <span className="clear-link" onClick={() => setManager('all')}>Show all managers</span>
+            </div></div>
+          ) : (<>
           {tab === 'monday' && <MondayView data={data} notes={notes} />}
           {tab === 'portfolio' && <PortfolioView data={data} notes={notes} />}
           {tab === 'renewals' && <RenewalsView data={data} />}
           {tab === 'oneonone' && <OneOnOneView data={data} notes={notes} />}
           {tab === 'compliance' && <ComplianceView data={data} />}
+          </>)}
         </div>
       </div>
     </div>
