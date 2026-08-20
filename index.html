@@ -264,6 +264,13 @@
     .ds-detail { font-size: 0.72rem; color: var(--text2); margin-top: 2px; line-height: 1.35; }
     .ds-why { font-size: 0.6rem; color: var(--text3); margin-top: 0.35rem; border-top: 1px solid var(--border); padding-top: 0.3rem; line-height: 1.3; }
 
+    /* Reference attributes in an expanded account */
+    .attr-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.5rem 0.9rem;
+      background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 0.7rem 0.85rem; }
+    .attr-item { min-width: 0; }
+    .attr-k { font-size: 0.62rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); }
+    .attr-v { font-size: 0.78rem; color: var(--text); margin-top: 1px; line-height: 1.35; word-break: break-word; }
+
     /* Single-box update text */
     .update-box { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
     .update-box-head { padding: 0.5rem 0.75rem; background: var(--surface3); border-bottom: 1px solid var(--border); font-size: 0.66rem; font-family: var(--mono); text-transform: uppercase; letter-spacing: 0.06em; color: var(--text3); display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
@@ -403,7 +410,14 @@ const COLUMN_MAP = {
   phase:       ['u_lob.u_lob_details.u_phase', 'u_phase'],
   state:       ['state', 'u_state'],
   region:      ['u_region', 'u_crel_country', 'u_territory'],
+  country:     ['u_crel_country'],
   techLead:    ['u_primary_cloud_tech_lead'],
+  platform:    ['u_crel_sas_sw_platform_version'],
+  solution:    ['u_crel_sas_solution'],
+  hosting:     ['u_crel_hosting_location'],
+  restricted:  ['u_project_restrictions.u_legal_status_restrictions'],
+  restrictType:['u_project_restrictions.u_legal_status_restriction_type'],
+  geoAllowed:  ['u_project_restrictions.u_geographies_allowed'],
 };
 
 function pickCol(r, names) {
@@ -1100,6 +1114,46 @@ function snip(v, n) {
   return (sp > n * 0.6 ? cut.slice(0, sp) : cut).replace(/[.,;:\-–]$/, '') + '…';
 }
 
+// ── CREL attribute helpers ─────────────────────────────────────────────────
+
+// Platform version, flagged when the account still carries a legacy stack.
+// The field can list several ("9.x, Viya 4.x"), so legacy wins for display.
+function platformInfo(row) {
+  const v = (row.platform || '').trim();
+  if (!v) return { label: '—', legacy: false, mixed: false };
+  const parts = v.split(',').map(s => s.trim()).filter(Boolean);
+  const legacy = parts.some(p => /^9\.x/i.test(p) || /viya\s*3/i.test(p));
+  return { label: parts.join(' + '), legacy, mixed: parts.length > 1 };
+}
+
+// Hosting is a long free-text list ("Azure - East US - Legacy (VSP) Hosting").
+// Condense to provider plus Legacy/NextGen tier, which is what actually gets
+// scanned; the full string stays available in the expanded row.
+function hostingInfo(row) {
+  const v = (row.hosting || '').trim();
+  if (!v) return { provider: '—', tier: '', full: '' };
+  const entries = v.split(',').map(s => s.trim()).filter(Boolean);
+  const providers = [...new Set(entries.map(e => {
+    const head = e.split(' - ')[0].trim();
+    if (/^customer \(on-prem/i.test(head)) return 'On-prem';
+    if (/^customer \(private/i.test(head)) return 'Private cloud';
+    return head;
+  }))];
+  const hasLegacy = /legacy/i.test(v), hasNext = /nextgen/i.test(v);
+  const tier = hasLegacy && hasNext ? 'Mixed' : hasLegacy ? 'Legacy' : hasNext ? 'NextGen' : '';
+  return { provider: providers.join(' / '), tier, full: v };
+}
+
+// Legal-status restriction: constrains who may staff or access the environment.
+function restrictionInfo(row) {
+  const on = /^yes/i.test((row.restricted || '').trim());
+  if (!on) return { restricted: false, label: '', detail: '' };
+  const type = (row.restrictType || '').trim();
+  const geo = (row.geoAllowed || '').trim();
+  return { restricted: true, label: type || 'Restricted',
+           detail: [type, geo && `Allowed: ${geo}`].filter(Boolean).join(' · ') };
+}
+
 // ── Domain scoring ─────────────────────────────────────────────────────────
 // Scores each account across the portfolio domains. Every domain returns
 // {state, label, detail} where state is 'good' | 'watch' | 'risk' | 'nodata'.
@@ -1672,12 +1726,15 @@ function PortfolioView({ data, notes }) {
   const [filterOwner, setFilterOwner] = useState('all');
   const [openAcct, setOpenAcct] = useState(null);
   const [phaseFilter, setPhaseFilter] = useState('all');
+  const [attrFilter, setAttrFilter] = useState('all');
 
   const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
 
   const scored = useMemo(() => data.map(r => {
     const s = parseStatus(r.status);
-    return { row: r, sections: s, domains: scoreDomains(r, s), flags: analyzeAccount(r, s), scope: phaseScope(r) };
+    return { row: r, sections: s, domains: scoreDomains(r, s), flags: analyzeAccount(r, s),
+             scope: phaseScope(r), platform: platformInfo(r), hosting: hostingInfo(r),
+             restrict: restrictionInfo(r) };
   }), [data]);
 
   // Rollup counts per domain
@@ -1699,8 +1756,20 @@ function PortfolioView({ data, notes }) {
       || (phaseFilter === 'impl' && x.scope.kind === 'impl')
       || (phaseFilter === 'unscored' && !x.scope.scored)
       || (phaseFilter === x.row.phase);
-    return matchSearch && matchOwner && matchDomain && matchPhase;
-  }), [scored, search, filterOwner, domainFilter, phaseFilter]);
+    const matchAttr = attrFilter === 'all'
+      || (attrFilter === 'legacy' && x.platform.legacy)
+      || (attrFilter === 'legacyHost' && x.hosting.tier === 'Legacy')
+      || (attrFilter === 'restricted' && x.restrict.restricted)
+      || (attrFilter.startsWith('region:') && x.row.region === attrFilter.slice(7))
+      || (attrFilter.startsWith('sol:') && x.row.solution === attrFilter.slice(4));
+    return matchSearch && matchOwner && matchDomain && matchPhase && matchAttr;
+  }), [scored, search, filterOwner, domainFilter, phaseFilter, attrFilter]);
+
+  const regions = useMemo(() => [...new Set(data.map(d => d.region))].filter(Boolean).sort(), [data]);
+  const solutions = useMemo(() => [...new Set(data.map(d => d.solution))].filter(Boolean).sort(), [data]);
+  const legacyCount = scored.filter(x => x.platform.legacy).length;
+  const legacyHostCount = scored.filter(x => x.hosting.tier === 'Legacy').length;
+  const restrictedCount = scored.filter(x => x.restrict.restricted).length;
 
   const phases = useMemo(() => [...new Set(data.map(d => d.phase))].filter(Boolean).sort(), [data]);
   const liveCount = scored.filter(x => x.scope.kind === 'live').length;
@@ -1720,7 +1789,7 @@ function PortfolioView({ data, notes }) {
       .map(([k, items]) => [k, items.slice().sort(sortFn)]);
   }, [filtered, groupBy]);
 
-  const hasFilters = search || filterOwner !== 'all' || domainFilter !== 'all';
+  const hasFilters = search || filterOwner !== 'all' || domainFilter !== 'all' || phaseFilter !== 'all' || attrFilter !== 'all';
 
   return (
     <div>
@@ -1767,11 +1836,19 @@ function PortfolioView({ data, notes }) {
           <option value="unscored">Not scored</option>
           {phases.map(p => <option key={p} value={p}>{p}</option>)}
         </select>
+        <select value={attrFilter} onChange={e => setAttrFilter(e.target.value)}>
+          <option value="all">All attributes</option>
+          {legacyCount > 0 && <option value="legacy">Legacy platform ({legacyCount})</option>}
+          {legacyHostCount > 0 && <option value="legacyHost">Legacy hosting ({legacyHostCount})</option>}
+          {restrictedCount > 0 && <option value="restricted">Access restricted ({restrictedCount})</option>}
+          {regions.map(r => <option key={r} value={'region:'+r}>Region: {r}</option>)}
+          {solutions.map(s => <option key={s} value={'sol:'+s}>Solution: {snip(s, 28)}</option>)}
+        </select>
         <select value={domainFilter} onChange={e => setDomainFilter(e.target.value)}>
           <option value="all">All domains</option>
           {DOMAINS.map(d => <option key={d.key} value={d.key}>Needs attention: {d.label}</option>)}
         </select>
-        {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setDomainFilter('all'); }}>× Clear</span>}
+        {hasFilters && <span className="clear-link" onClick={() => { setSearch(''); setFilterOwner('all'); setDomainFilter('all'); setPhaseFilter('all'); setAttrFilter('all'); }}>× Clear</span>}
       </div>
 
       <div className="matrix-wrap">
@@ -1780,6 +1857,9 @@ function PortfolioView({ data, notes }) {
             <tr>
               <th className="acct-col">Account</th>
               <th style={{textAlign:'left', minWidth:'112px'}}>Phase</th>
+              <th style={{textAlign:'left', minWidth:'96px'}} title="SAS software platform version — 9.x and Viya 3.x are legacy">Platform</th>
+              <th style={{textAlign:'left', minWidth:'104px'}} title="Hosting provider and Legacy/NextGen tier">Hosting</th>
+              <th style={{textAlign:'left', minWidth:'104px'}} title="SAS solution — LSAF and Risk carry different support obligations">Solution</th>
               {DOMAINS.map(d => <th key={d.key} title={DOMAIN_KEYS[d.key]}>{d.short}</th>)}
               <th style={{width:'30px'}}></th>
             </tr>
@@ -1788,7 +1868,7 @@ function PortfolioView({ data, notes }) {
             {groups.map(([gname, items]) => (
               <React.Fragment key={gname}>
                 {groupBy !== 'none' && (
-                  <tr className="grp"><td colSpan={DOMAINS.length + 3}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
+                  <tr className="grp"><td colSpan={DOMAINS.length + 6}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
                 )}
                 {items.map(x => {
                   const open = openAcct === x.row.lob;
@@ -1797,7 +1877,13 @@ function PortfolioView({ data, notes }) {
                     <React.Fragment key={x.row.lob}>
                       <tr className={`acct${open?' open':''}`} onClick={() => setOpenAcct(open ? null : x.row.lob)}>
                         <td>
-                          <div className="customer-name">{x.row.customer}</div>
+                          <div className="customer-name">
+                            {x.row.customer}
+                            {x.restrict.restricted && (
+                              <span title={`Access restricted — ${x.restrict.detail}`}
+                                style={{marginLeft:'0.35rem', fontSize:'0.72rem', color:'var(--purple)'}}>🔒</span>
+                            )}
+                          </div>
                           <div className="lob-code">
                             {x.row.lob}
                             {groupBy === 'none' && <span> · {x.row.owner}</span>}
@@ -1818,6 +1904,24 @@ function PortfolioView({ data, notes }) {
                               background:'var(--surface3)', borderColor:'var(--border)'}}>not scored</span>
                           )}
                         </td>
+                        <td>
+                          <div style={{fontSize:'0.78rem', color: x.platform.legacy ? 'var(--orange)' : 'var(--text)',
+                            fontWeight: x.platform.legacy ? 600 : 400}}>
+                            {x.platform.label}
+                          </div>
+                          {x.platform.legacy && <div className="lob-code" style={{color:'var(--orange)'}}>legacy</div>}
+                        </td>
+                        <td>
+                          <div style={{fontSize:'0.78rem'}} title={x.hosting.full}>{x.hosting.provider}</div>
+                          {x.hosting.tier && (
+                            <div className="lob-code" style={{color: x.hosting.tier==='Legacy' ? 'var(--orange)' : 'var(--text3)'}}>
+                              {x.hosting.tier}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <div style={{fontSize:'0.76rem', color:'var(--text2)'}}>{x.row.solution || '—'}</div>
+                        </td>
                         {DOMAINS.map(d => {
                           const dm = x.domains[d.key];
                           const m = STATE_META[dm?.state || 'nodata'];
@@ -1834,7 +1938,8 @@ function PortfolioView({ data, notes }) {
                       </tr>
                       {open && (
                         <tr className="expand-row">
-                          <td colSpan={DOMAINS.length + 3}>
+                          <td colSpan={DOMAINS.length + 6}>
+                            <AccountAttributes x={x} />
                             <DomainSummary domains={x.domains} />
                             <ExpandedRow row={x.row} notes={notes} />
                           </td>
@@ -1857,6 +1962,35 @@ function PortfolioView({ data, notes }) {
 }
 
 // Domain scorecard shown at the top of an expanded account
+// Reference attributes from the CREL record — context that doesn't belong in
+// the scan table but is useful once you've opened an account.
+function AccountAttributes({ x }) {
+  const r = x.row;
+  const items = [
+    ['CREL', r.crelNumber],
+    ['Cloud Tech Lead', r.techLead],
+    ['Region', [r.region, r.country && r.country !== r.region ? r.country : null].filter(Boolean).join(' · ')],
+    ['Platform', x.platform.label !== '—' ? x.platform.label + (x.platform.legacy ? '  (legacy)' : '') : null],
+    ['Solution', r.solution],
+    ['Hosting', x.hosting.full],
+    ['Access restriction', x.restrict.restricted ? x.restrict.detail : null],
+    ['Description', r.description],
+  ].filter(([, v]) => v);
+  if (!items.length) return null;
+  return (
+    <div style={{padding:'0.9rem 1.25rem 0'}}>
+      <div className="attr-grid">
+        {items.map(([k, v]) => (
+          <div key={k} className="attr-item">
+            <div className="attr-k">{k}</div>
+            <div className="attr-v">{v}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function DomainSummary({ domains }) {
   return (
     <div className="domain-summary">
