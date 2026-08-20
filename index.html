@@ -383,19 +383,50 @@ function formatDate(val) {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' });
 }
 
+// Column names differ between the LOB-details export and the
+// customer-relationship export (and have changed over time), so each logical
+// field is resolved from a list of candidates, matched case-insensitively and
+// ignoring the dotted table prefixes ServiceNow adds.
+const COLUMN_MAP = {
+  lob:         ['u_lob.u_lob_details', 'u_lob', 'lob'],
+  customer:    ['u_customer_relationship.u_customer_account', 'u_lob.u_customer_account',
+                'u_customer_account', 'customer_account', 'customer'],
+  owner:       ['u_project_owner', 'assigned_to', 'owner', 'u_csdm'],
+  sentiment:   ['u_lob.u_lob_details.u_status_overall', 'u_status_overall', 'status_overall'],
+  operations:  ['u_lob.u_lob_details.u_status_operations', 'u_status_operations', 'status_operations'],
+  updated:     ['u_lob.u_lob_details.sys_updated_on', 'sys_updated_on', 'sys_updated', 'updated'],
+  contractEnd: ['u_customer_relationship.u_contract_end', 'u_contract_end', 'u_lob.u_contract_end', 'contract_end'],
+  status:      ['u_lob.u_lob_details.u_lob_status', 'u_lob_status', 'lob_status'],
+  description: ['u_project_description', 'short_description', 'description'],
+  // Present only in the customer-relationship export; harmless when absent
+  crelNumber:  ['number', 'u_crel_number'],
+  phase:       ['u_lob.u_lob_details.u_phase', 'u_phase'],
+  state:       ['state', 'u_state'],
+  region:      ['u_region', 'u_crel_country', 'u_territory'],
+  techLead:    ['u_primary_cloud_tech_lead'],
+};
+
+function pickCol(r, names) {
+  for (const n of names) {
+    if (r[n] !== undefined && String(r[n]).trim() !== '') return String(r[n]).trim();
+  }
+  // Fall back to a case/prefix-insensitive scan so a renamed or re-prefixed
+  // column still resolves instead of silently coming back empty.
+  const want = names.map(n => n.toLowerCase().replace(/^.*\./, ''));
+  for (const key of Object.keys(r)) {
+    const bare = key.toLowerCase().replace(/^.*\./, '');
+    if (want.includes(bare) && String(r[key] || '').trim() !== '') return String(r[key]).trim();
+  }
+  return '';
+}
+
 function normalizeRow(r) {
-  return {
-    lob:       (r['u_lob.u_lob_details'] || r['u_lob'] || '').trim(),
-    customer:  (r['u_customer_relationship.u_customer_account'] || r['u_lob.u_customer_account'] || '').trim(),
-    owner:     (r['u_project_owner'] || '').trim(),
-    sentiment: (r['u_status_overall'] || 'Green').trim(),
-    operations:(r['u_status_operations'] || 'Green').trim(),
-    updated:   (r['sys_updated_on'] || r['sys_updated'] || '').trim(),
-    contractEnd: (r['u_customer_relationship.u_contract_end'] || r['u_contract_end']
-               || r['u_lob.u_contract_end'] || '').trim(),
-    status:    (r['u_lob_status'] || '').replace(/\r\n?/g, '\n').trim(),
-    description:(r['u_project_description'] || '').trim(),
-  };
+  const out = {};
+  Object.entries(COLUMN_MAP).forEach(([k, names]) => { out[k] = pickCol(r, names); });
+  out.sentiment = out.sentiment || 'Green';
+  out.operations = out.operations || 'Green';
+  out.status = (out.status || '').replace(/\r\n?/g, '\n').trim();
+  return out;
 }
 
 function clean(v) {
@@ -416,58 +447,11 @@ function isNoIssues(v) {
   return false;
 }
 
-// Slice the section starting after `startRe` and ending before the first
-// matching `endRes`. Returns '' if the section header isn't found.
-function sect(t, startRe, ...endRes) {
-  const sm = t.match(startRe);
-  if (!sm) return '';
-  const start = sm.index + sm[0].length;
-  const rest = t.slice(start);
-  let end = rest.length;
-  for (const er of endRes) {
-    const em = rest.match(er);
-    if (em && em.index < end) end = em.index;
-  }
-  return rest.slice(0, end);
-}
-
-// Single-line field value following a label (won't cross newlines).
-function f1(t, re) {
-  if (!t) return null;
-  const m = t.match(re);
-  return m ? clean(m[1]) : null;
-}
-
-// Multi-line block from after `startRe` to the first of `nextLabels`.
-function blk(text, startRe, nextLabels) {
-  if (!text) return null;
-  const sm = text.match(startRe);
-  if (sm == null) return null;
-  const start = sm.index + sm[0].length;
-  const rest = text.slice(start);
-  let end = rest.length;
-  (nextLabels || []).forEach(nl => {
-    const em = rest.match(nl);
-    if (em && em.index < end) end = em.index;
-  });
-  return clean(rest.slice(0, end));
-}
-
-// Prefer a URL after the label; fall back to same-line text.
-function linkField(t, labelRe) {
-  if (!t) return null;
-  const u = t.match(new RegExp(labelRe.source + '[\\s\\S]*?(https?://[^\\s\\n]+)', labelRe.flags));
-  if (u) return u[1];
-  const m = t.match(new RegExp(labelRe.source + '[ \\t]*([^\\n]*)', labelRe.flags));
-  return m ? clean(m[1]) : null;
-}
-
 // True when a field contains placeholder or non-answer text
 function isPlaceholder(v) {
   if (!v) return false;
   const s = v.trim().toLowerCase();
   if (['tbd','tbc','to be determined','to be confirmed','pending'].includes(s)) return true;
-  // Template boilerplate left unreplaced
   if (v.includes('- version, date, contract needs:') && v.trim().startsWith('- version')) return true;
   return false;
 }
@@ -480,135 +464,373 @@ function isThinFiller(v) {
   return /^(no major issues?|no issues? or incidents?|system(s)? (is |are )?(stable|healthy|operational|running)|nothing (new|to report|significant)|all systems? (up|green|operational|normal)|no updates? this week|no significant (updates?|changes?)|no new (updates?|issues?))/.test(s);
 }
 
-function parseStatus(status) {
-  if (!status) return {};
-  const t = status;
+// ── Robust status parsing ──────────────────────────────────────────────────
+// CSDMs write these updates by hand, so the template drifts: headings appear
+// out of order, sections get renamed, colons become semicolons, words get
+// misspelled, and some updates are free prose with no headings at all.
+//
+// The parser therefore does NOT slice the text by fixed section order. It
+// builds an index of every "Label: value" line it can find, fuzzy-matches each
+// label to a canonical field, and uses the nearest preceding section header to
+// disambiguate repeated labels like "Link". Compliance is judged separately
+// (see computeCompliance) so that a usable value is still extracted from an
+// update that is technically out of spec.
 
-  // Carve the template into its sections so fields can't bleed across them.
-  const weekly = sect(t, /^/, /-{5,}/, /\n\s*Service Health Reviews/i);
-  const shr    = sect(t, /Service Health Reviews/i, /\n\s*Customer Health/i, /\n\s*Profitability/i);
-  const health = sect(t, /Customer Health/i, /\n\s*Profitability/i, /\n\s*Lifecycle/i);
-  const profit = sect(t, /\n\s*Profitability/i, /\n\s*Lifecycle/i, /\n\s*Renewal/i);
-  const life   = sect(t, /Lifecycle Planning/i, /\n\s*Renewal/i);
-  const renew  = sect(t, /Renewal\s+Status/i);
+const SECTION_DEFS = [
+  { key: 'weekly',        label: 'Weekly Update',          aliases: ['weekly update','weekly status'] },
+  { key: 'shr',           label: 'Service Health Reviews', aliases: ['service health reviews','service health review','shr'] },
+  { key: 'customerHealth',label: 'Customer Health',        aliases: ['customer health'] },
+  { key: 'profitability', label: 'Profitability',          aliases: ['profitability','financial performance'] },
+  { key: 'lifecycle',     label: 'Lifecycle Planning',     aliases: ['lifecycle planning','lifecycle roadmap','lifecycle management planning','lifecycle'] },
+  { key: 'renewal',       label: 'Renewal Status',         aliases: ['renewal status','renewal','renewal state','renewal planning','contract renewal','renewal info'] },
+];
 
-  // "Next Week's Focus" is written many ways: with/without the apostrophe,
-  // "Next Weeks Focus", or just "Next Weeks:" (Key Davis). One marker matches
-  // them all so blocks terminate correctly and the field is captured.
-  const NEXT_FOCUS = /\n\s*Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i;
-  return {
-    // CSDM-entered date at the top of the update. Handles "Date:", "Updated
-    // Date:", "Update Date:", "Date -", "Updated 8/13/2026", and a bare date on
-    // the first line — all formats seen across the team's exports.
-    reportedDate: (() => {
-      const m = t.match(/^\s*(?:Update[d]?\s+)?Date\s*[:\-]\s*([^\n]+)/i);
-      if (m) return clean(m[1]);
-      const u = t.match(/^\s*Updated\s+(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/i);
-      if (u) return clean(u[1]);
-      const b = t.match(/^\s*(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})\b/);
-      if (b) return clean(b[1]);
-      return null;
-    })(),
-    // Weekly update
-    weeklyWins: blk(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, NEXT_FOCUS]),
-    issues:     (() => { const v = blk(weekly, /Issues\s*\/?\s*(?:Concerns?|Risks?)?\s*:/i, [/\n\s*Changes\s*:/i, /\n\s*Upcoming/i, NEXT_FOCUS]); return isNoIssues(v) ? null : v; })(),
-    changes:    blk(weekly, /\n\s*Changes\s*:/i, [/\n\s*Upcoming/i, NEXT_FOCUS]),
-    upcoming:   blk(weekly, /Upcoming Milestones?\s*:/i, [NEXT_FOCUS]),
-    nextFocus:  blk(weekly, /Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i, []),
-    // Service Health Reviews
-    frequency:  f1(shr, /Frequency of service health reviews?\s*:[ \t]*([^\n]*)/i),
-    completed:  f1(shr, /Completed this period\s*\??\s*:?[ \t]*([^\n]*)/i),
-    participation: blk(shr, /Customer Participation\s*:/i, [/\n\s*Link\s*:/i]),
-    shrLink:    linkField(shr, /\n\s*Link\s*:/i),
-    // Customer Health
-    sla:        f1(health, /(?:Contractual\s+)?SLA\s*:[ \t]*([^\n]*)/i),
-    interruptions: f1(health, /interruptions?[^:\n]*:[ \t]*([^\n]*)/i),
-    meetingNotesLink: f1(health, /Weekly meeting notes link\s*:[ \t]*([^\n]*)/i),
-    // Profitability
-    profitabilityLink: linkField(profit, /Link\s*:/i),
-    // Lifecycle Planning
-    currentVersions: f1(life, /Current Versions?\s*:[ \t]*([^\n]*)/i),
-    nextVersion: blk(life, /Next Version[^:]*:/i, [/\n\s*RITM/i, /\n\s*\*/]),
-    // Renewal Status
-    within9mo:  f1(renew, /Within 9 months? of contract end\s*\??\s*:?[ \t]*([^\n]*)/i),
-    renewalFeedback: blk(renew, /Customer feedback[^:]*:/i, [/\n\s*Next steps/i]),
-    renewalNextSteps: blk(renew, /Next steps\s*:/i, [/\n\s*Link to renewal/i]),
-    renewalLink: linkField(renew, /Link to renewal presentation\/form\s*:/i),
-    renewalRaw: (renew || '').trim(),
-  };
+// section: which section the field belongs to (used to disambiguate and for
+// compliance ordering). ambiguous: label alone is not enough, needs section.
+const FIELD_DEFS = [
+  { key:'reportedDate', label:'Date', section:'weekly', multiline:false,
+    aliases:['date','updated date','update date','status update date','last updated','date of update','status date'] },
+  { key:'weeklyWins', label:'Weekly Accomplishments', section:'weekly', multiline:true,
+    aliases:['weekly accomplishments','weekly accomplishment','weekly accomplishments update','weekly accomplishments updates',
+             'key accomplishments this week','accomplishments','last week achievements','weekly wins','weekly win',
+             'current activities weekly accomplishments','current status accomplishments','weekly updates'] },
+  { key:'issues', label:'Issues/Concerns', section:'weekly', multiline:true,
+    aliases:['issues concerns','issues risks','issues','concerns','risks','main risks','issues and concerns','issues or concerns','key risks'] },
+  { key:'changes', label:'Changes', section:'weekly', multiline:true,
+    aliases:['changes','change'] },
+  { key:'upcoming', label:'Upcoming Milestones', section:'weekly', multiline:true,
+    aliases:['upcoming milestones','upcoming milestone','key milestones','key milestones and activities','key milestones activities',
+             'milestones wins','upcoming activities milestones','milestones','upcoming activities'] },
+  { key:'nextFocus', label:"Next Week's Focus", section:'weekly', multiline:true,
+    aliases:['next weeks focus','next week focus','next week s focus','upcoming focus','focus','next focus','next weeks priorities',
+             'next weeks','next week','next weeks s focus','next week s upcoming activities','next weeks activities'] },
+
+  { key:'frequency', label:'Frequency of Service Health Reviews', section:'shr', multiline:false,
+    aliases:['frequency of service health reviews','frequency of service health review','frequency','review frequency',
+             'monthly service health review meetings cx dashboard'] },
+  { key:'completed', label:'Completed This Period?', section:'shr', multiline:false,
+    aliases:['completed this period','service health review completed this period','completed this period yes no'] },
+  { key:'participation', label:'Customer Participation', section:'shr', multiline:true,
+    aliases:['customer participation','service health review participation','participation'] },
+  { key:'shrLink', label:'SHR Link', section:'shr', multiline:false, ambiguous:true,
+    aliases:['link','links','cx dashboard','dashboard link'] },
+
+  { key:'sla', label:'SLA', section:'customerHealth', multiline:false,
+    aliases:['sla','sla attainment','sla performance','contract sla','sla status'] },
+  { key:'interruptions', label:'Service Interruptions (3mo)', section:'customerHealth', multiline:false,
+    aliases:['number of service interruptions last 3 months','service interruptions over last 3 months',
+             'services interruptions over last 3 months','number of service interruptions','service interruptions',
+             'interruptions','number of service interruptions impacting sla customer temperature or sentiment over last 3 months'] },
+  { key:'meetingNotesLink', label:'Weekly Meeting Notes Link', section:'customerHealth', multiline:false,
+    aliases:['weekly meeting notes link','meeting notes link','weekly meeting notes','meeting notes'] },
+
+  { key:'profitabilityLink', label:'Profitability Link', section:'profitability', multiline:false, ambiguous:true,
+    aliases:['link','profitability link','links'] },
+
+  { key:'currentVersions', label:'Current Versions', section:'lifecycle', multiline:false,
+    aliases:['current versions','current version','current versions prod dev','current version prod','current version test','versions'] },
+  { key:'nextVersion', label:'Next Version or Decommission Plan', section:'lifecycle', multiline:true,
+    aliases:['next version or decommission plan','next version plan','next version','next versions','target version',
+             'next version or decommission','decommission plan'] },
+
+  { key:'within9mo', label:'Within 9 Months of Contract End?', section:'renewal', multiline:false,
+    aliases:['within 9 month of contract end','within 9 months of contract end','within 9 months','within 9 month',
+             'within 9 months of renewal','within nine months of contract end','9 months of contract end'] },
+  { key:'renewalFeedback', label:'Customer Feedback', section:'renewal', multiline:true,
+    aliases:['customer feedback','customer feedback renewing renewal at risk or lower price point non renewal or cancellation',
+             'renewal feedback','customer renewal feedback'] },
+  { key:'renewalNextSteps', label:'Next Steps', section:'renewal', multiline:true,
+    aliases:['next steps','next step','nextsteps'] },
+  { key:'renewalLink', label:'Link to Renewal Presentation/Form', section:'renewal', multiline:false,
+    aliases:['link to renewal presentation form','link to renewal materials','renewal link','renewal materials',
+             'link to renewal','renewal presentation'] },
+];
+
+// Canonical template order, used only for compliance reporting
+const TEMPLATE_ORDER = ['weeklyWins','issues','changes','upcoming','nextFocus',
+  'frequency','completed','participation','shrLink','sla','interruptions','meetingNotesLink',
+  'profitabilityLink','currentVersions','nextVersion','within9mo','renewalFeedback','renewalNextSteps','renewalLink'];
+
+// Strip punctuation and collapse whitespace so "Issues/Concerns:" and
+// "Issues  Concerns ;" normalize to the same key.
+function normLabel(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[\u2018\u2019']/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
-// Returns the template fields the CSDM left TRULY BLANK, as {key,label}.
-// Raw presence is checked — a deliberate answer like "No", "None", "0", or
-// "N/A" counts as provided (the field was addressed), so only an empty field
-// is reported. Issues/Concerns is excluded (blank = "no issues", the good
-// state). Renewal sub-fields are only expected when within 9 months of end.
+// Levenshtein distance, capped — used so ordinary typos still match.
+function editDistance(a, b, cap) {
+  if (Math.abs(a.length - b.length) > cap) return cap + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i];
+    let best = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+      if (cur[j] < best) best = cur[j];
+    }
+    if (best > cap) return cap + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+
+// Match a raw label to a canonical field. Returns {def, exact} or null.
+// `section` is the section the line sits under, used for ambiguous labels.
+// Rules are deliberately conservative: a generic word must match an alias
+// exactly, and only long labels are allowed to match by prefix or edit
+// distance. Loose containment matching pulled in whole sentences.
+function matchField(rawLabel, section) {
+  const n = normLabel(rawLabel);
+  if (!n || n.length > 110) return null;
+  // A label that is mostly digits/ticket refs is prose, not a heading
+  if (!/[a-z]{3}/.test(n)) return null;
+  const inSection = d => !d.section || !section || d.section === section;
+  const pickFrom = cands => {
+    const scoped = cands.filter(inSection);
+    const pick = scoped[0] || cands.find(d => !d.ambiguous) || cands[0];
+    if (!pick) return null;
+    if (pick.ambiguous && !scoped.length) return null; // bare "Link" with no section
+    return pick;
+  };
+
+  // 1. exact alias match
+  let cands = FIELD_DEFS.filter(d => d.aliases.includes(n));
+  if (cands.length) { const p = pickFrom(cands); if (p) return { def: p, exact: true, alias: n }; }
+
+  // 2. label carries extra trailing text ("Within 9 month of contract end? NA")
+  cands = FIELD_DEFS.filter(d => d.aliases.some(a => a.length >= 10 && n.startsWith(a)));
+  if (cands.length) { const p = pickFrom(cands); if (p) return { def: p, exact: false, alias: n }; }
+
+  // 3. label is a shortened form of a longer heading ("Next Weeks" for
+  //    "Next Week's Focus", "Completed this period" for the full line).
+  //    Requires two or more words so a generic single word like "Renewal"
+  //    cannot claim "Renewal feedback".
+  cands = FIELD_DEFS.filter(d => d.aliases.some(a =>
+    n.length >= 9 && n.includes(' ') && a.length > n.length && a.startsWith(n)));
+  if (cands.length) { const p = pickFrom(cands); if (p) return { def: p, exact: false, alias: n }; }
+
+  // 4. ordinary typos ("Upcoming Milesonts")
+  let best = null, bestD = Infinity;
+  FIELD_DEFS.forEach(d => {
+    if (d.ambiguous) return;
+    d.aliases.forEach(a => {
+      if (a.length < 8 || n.length < 8) return;
+      if (Math.abs(a.length - n.length) > 3) return;
+      const dist = editDistance(n, a, 2);
+      if (dist <= 2 && dist < bestD) { bestD = dist; best = d; }
+    });
+  });
+  if (best) return { def: best, exact: false, alias: n };
+  return null;
+}
+
+function matchSection(line) {
+  const n = normLabel(line);
+  if (!n || n.length > 44) return null;
+  for (const s of SECTION_DEFS) if (s.aliases.includes(n)) return s;
+  for (const s of SECTION_DEFS) {
+    for (const a of s.aliases) {
+      if (a.length >= 8 && (n === a || n.startsWith(a))) return s;
+      if (a.length >= 8 && editDistance(n, a, 2) <= 2) return s;
+    }
+  }
+  return null;
+}
+
+// Core scan: walk the text line by line building a label index.
+function indexStatus(text) {
+  const src = String(text || '').replace(/\r\n?/g, '\n');
+  const lines = src.split('\n');
+  const entries = [];   // {key, def, rawLabel, value, line, section, exact}
+  const sectionsSeen = [];
+  let section = 'weekly';
+  let current = null;   // entry currently collecting continuation lines
+
+  const flush = () => {
+    if (current) { current.value = current.buf.join('\n').trim(); delete current.buf; entries.push(current); current = null; }
+  };
+
+  lines.forEach((raw, i) => {
+    const line = raw.replace(/\s+$/, '');
+    const trimmed = line.trim();
+
+    // A bare section header on its own line
+    const bare = trimmed && !/[:;]/.test(trimmed) ? matchSection(trimmed) : null;
+    if (bare) {
+      flush();
+      section = bare.key;
+      if (!sectionsSeen.some(s => s.key === bare.key)) sectionsSeen.push({ key: bare.key, line: i });
+      return;
+    }
+
+    // The dashed divider closes the weekly block — never let it become part
+    // of the preceding field's value.
+    if (/^[\-_=]{5,}$/.test(trimmed)) { flush(); return; }
+
+    // Split a line into label + value. Three accepted separators:
+    //   "Label: value"  "Label; value"  and  "Label? value"
+    // The question form matters because the template's own wording ends in a
+    // question mark and many CSDMs answer it without adding a colon at all
+    // ("Within 9 month of contract end? Yes", "Completed this period? Yes").
+    let rawLabel = null, rest = null;
+    let m = trimmed.match(/^[\-\*\u2022\s]*([A-Za-z][^:;\n]{1,110}?)\s*[:;]\s*(.*)$/);
+    if (m) { rawLabel = m[1].trim(); rest = m[2]; }
+    else {
+      m = trimmed.match(/^[\-\*\u2022\s]*([A-Za-z][^:;?\n]{1,110}\?)\s*(.*)$/);
+      if (m) { rawLabel = m[1].trim(); rest = m[2]; }
+    }
+
+    if (rawLabel !== null) {
+      // A section name written as a label ("Renewal Status:") switches section
+      const asSection = matchSection(rawLabel);
+      const hit = matchField(rawLabel, asSection ? asSection.key : section);
+      if (asSection && (!hit || !hit.exact)) {
+        flush();
+        section = asSection.key;
+        if (!sectionsSeen.some(s2 => s2.key === asSection.key)) sectionsSeen.push({ key: asSection.key, line: i });
+        return;                       // never also treat it as a field
+      }
+      if (hit) {
+        flush();
+        if (hit.def.section && hit.def.section !== section && !hit.def.ambiguous) {
+          section = hit.def.section;
+          if (!sectionsSeen.some(s2 => s2.key === section)) sectionsSeen.push({ key: section, line: i });
+        }
+        current = { key: hit.def.key, def: hit.def, rawLabel, exact: hit.exact,
+                    section, line: i, buf: [rest] };
+        if (!hit.def.multiline) flush();
+        return;
+      }
+      // Unrecognised label ends any multiline capture so we don't swallow it
+      flush();
+      return;
+    }
+
+    if (current) current.buf.push(line);
+  });
+  flush();
+
+  // First occurrence wins for each field
+  const fields = {};
+  const meta = {};
+  entries.forEach(e => {
+    if (fields[e.key] === undefined || fields[e.key] === null || fields[e.key] === '') {
+      fields[e.key] = e.value;
+      meta[e.key] = { rawLabel: e.rawLabel, exact: e.exact, line: e.line, section: e.section };
+    }
+  });
+
+  return { fields, meta, entries, sectionsSeen, lines: src };
+}
+
+// Reconstruct the raw text of one section (used for the Renewals tab)
+function sectionText(idx, sectionKey) {
+  const lines = idx.lines.split('\n');
+  const starts = idx.sectionsSeen.map(s => s.line).sort((a,b) => a-b);
+  const s = idx.sectionsSeen.find(x => x.key === sectionKey);
+  if (s) {
+    const next = starts.find(l => l > s.line);
+    return lines.slice(s.line + 1, next === undefined ? lines.length : next).join('\n').trim();
+  }
+  // No header found — fall back to the span covered by that section's fields
+  const own = idx.entries.filter(e => e.def.section === sectionKey);
+  if (!own.length) return '';
+  const lo = Math.min(...own.map(e => e.line));
+  const hi = Math.max(...own.map(e => e.line));
+  return lines.slice(lo, hi + 3).join('\n').trim();
+}
+
+
+// Public shape kept identical to the previous rigid parser so every downstream
+// view keeps working; values now come from the tolerant label index.
+function parseStatus(status) {
+  if (!status) return {};
+  const idx = indexStatus(status);
+  const f = idx.fields;
+  const get = k => clean(f[k]);
+  // Yes/no fields: "No" is a real answer, not an empty value, so these keep
+  // whatever the CSDM wrote instead of being blanked out by clean().
+  const keep = k => {
+    const v = f[k];
+    if (v === undefined || v === null) return null;
+    const s = String(v).trim();
+    return s === '' || s === '-' ? null : s;
+  };
+  const out = {
+    reportedDate: get('reportedDate'),
+    weeklyWins:   get('weeklyWins'),
+    issues:       (() => { const v = clean(f.issues); return isNoIssues(v) ? null : v; })(),
+    changes:      get('changes'),
+    upcoming:     get('upcoming'),
+    nextFocus:    get('nextFocus'),
+    frequency:    get('frequency'),
+    completed:    keep('completed'),
+    participation:keep('participation'),
+    shrLink:      get('shrLink'),
+    sla:          get('sla'),
+    interruptions:keep('interruptions'),
+    meetingNotesLink: get('meetingNotesLink'),
+    profitabilityLink:get('profitabilityLink'),
+    currentVersions:  get('currentVersions'),
+    nextVersion:  get('nextVersion'),
+    within9mo:    keep('within9mo'),
+    renewalFeedback:  get('renewalFeedback'),
+    renewalNextSteps: get('renewalNextSteps'),
+    renewalLink:  get('renewalLink'),
+    renewalRaw:   sectionText(idx, 'renewal'),
+    _idx: idx,
+  };
+  return out;
+}
+
+// CONTENT check: which template fields the CSDM left blank. A written
+// "No"/"None"/"N/A"/"0" counts as answered — only a truly empty field is
+// reported. Issues/Concerns is excluded because blank means "no issues".
 function computeMissing(status) {
-  if (!status || status.trim().length < 20) {
-    return [{ key: 'all', label: 'Entire update is blank' }];
-  }
-  const t = status;
-  const weekly = sect(t, /^/, /-{5,}/, /\n\s*Service Health Reviews/i);
-  const shr    = sect(t, /Service Health Reviews/i, /\n\s*Customer Health/i, /\n\s*Profitability/i);
-  const health = sect(t, /Customer Health/i, /\n\s*Profitability/i, /\n\s*Lifecycle/i);
-  const profit = sect(t, /\n\s*Profitability/i, /\n\s*Lifecycle/i, /\n\s*Renewal/i);
-  const life   = sect(t, /Lifecycle Planning/i, /\n\s*Renewal/i);
-  const renew  = sect(t, /Renewal\s+Status/i);
-
-  const present = v => v != null && v.trim() !== '' && v.trim() !== '-';
-  const rawLine = (text, labelRe) => {
-    if (!text) return null;
-    const m = text.match(new RegExp(labelRe.source + '[ \\t]*([^\\n]*)', labelRe.flags));
-    return m ? (m[1] || '') : null;
-  };
-  const rawBlock = (text, startRe, nextLabels) => {
-    if (!text) return null;
-    const sm = text.match(startRe);
-    if (!sm) return null;
-    const start = sm.index + sm[0].length;
-    const rest = text.slice(start);
-    let end = rest.length;
-    (nextLabels || []).forEach(nl => { const em = rest.match(nl); if (em && em.index < end) end = em.index; });
-    return rest.slice(0, end);
-  };
-  const hasLink = (section, labelRe) => {
-    if (!section) return false;
-    if (new RegExp(labelRe.source + '[\\s\\S]*?https?://', labelRe.flags).test(section)) return true;
-    return present(rawLine(section, labelRe));
-  };
-
-  const NEXT_FOCUS = /\n\s*Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i;
-  const within9 = /yes/i.test(rawLine(renew, /Within 9 months? of contract end\s*\??\s*:?/i) || '');
-
-  const checks = [
-    ['weeklyWins', 'Weekly Accomplishments', present(rawBlock(weekly, /Weekly (?:Accomplishments?|Wins?)\s*:/i, [/\n\s*Issues/i, /\n\s*Changes\s*:/i, /\n\s*Upcoming/i, NEXT_FOCUS]))],
-    ['changes', 'Changes', present(rawBlock(weekly, /\n\s*Changes\s*:/i, [/\n\s*Upcoming/i, NEXT_FOCUS]))],
-    ['upcoming', 'Upcoming Milestones', present(rawBlock(weekly, /Upcoming Milestones?\s*:/i, [NEXT_FOCUS]))],
-    ['nextFocus', "Next Week's Focus", present(rawBlock(weekly, /Next\s+Week['\u2019]?s?(?:\s+Focus)?\s*:/i, []))],
-    ['frequency', 'SHR Frequency', present(rawLine(shr, /Frequency of service health reviews?\s*:/i))],
-    ['completed', 'SHR Completed This Period', present(rawLine(shr, /Completed this period\s*\??\s*:?/i))],
-    ['participation', 'Customer Participation', present(rawBlock(shr, /Customer Participation\s*:/i, [/\n\s*Link\s*:/i]))],
-    ['shrLink', 'SHR Link', hasLink(shr, /\n\s*Link\s*:/i)],
-    ['sla', 'SLA', present(rawLine(health, /(?:Contractual\s+)?SLA\s*:/i))],
-    ['interruptions', 'Service Interruptions (3mo)', present(rawLine(health, /interruptions?[^:\n]*:/i))],
-    ['meetingNotesLink', 'Weekly Meeting Notes Link', present(rawLine(health, /Weekly meeting notes link\s*:/i))],
-    ['profitabilityLink', 'Profitability Link', hasLink(profit, /Link\s*:/i)],
-    ['currentVersions', 'Current Versions', present(rawLine(life, /Current Versions?\s*:/i))],
-    ['nextVersion', 'Next Version / Decommission Plan', present(rawBlock(life, /Next Version[^:]*:/i, [/\n\s*RITM/i, /\n\s*\*/]))],
-    ['within9mo', 'Within 9 Months of Contract End', present(rawLine(renew, /Within 9 months? of contract end\s*\??\s*:?/i))],
-  ];
-  if (within9) {
-    checks.push(['renewalFeedback', 'Renewal Customer Feedback', present(rawBlock(renew, /Customer feedback[^:]*:/i, [/\n\s*Next steps/i]))]);
-    checks.push(['renewalNextSteps', 'Renewal Next Steps', present(rawBlock(renew, /Next steps\s*:/i, [/\n\s*Link to renewal/i]))]);
-    checks.push(['renewalLink', 'Renewal Presentation / Form Link', hasLink(renew, /Link to renewal presentation\/form\s*:/i)]);
-  }
-  return checks.filter(([, , ok]) => !ok).map(([key, label]) => ({ key, label }));
+  if (!status || status.trim().length < 20) return [{ key: 'all', label: 'Entire update is blank' }];
+  const idx = indexStatus(status);
+  const raw = idx.fields;
+  const present = k => raw[k] !== undefined && String(raw[k]).trim() !== '' && String(raw[k]).trim() !== '-';
+  const within9 = /yes/i.test(String(raw.within9mo || ''));
+  const wanted = TEMPLATE_ORDER.filter(k => {
+    if (k === 'issues') return false;
+    if (['renewalFeedback','renewalNextSteps','renewalLink'].includes(k)) return within9;
+    return true;
+  });
+  return wanted.filter(k => !present(k))
+    .map(k => ({ key: k, label: (FIELD_DEFS.find(d => d.key === k) || {}).label || k }));
 }
 
 // Intentional pointer / non-tracked records that shouldn't be judged on the
 // template: MPD and MPT both just say "SEE MPM", and anything explicitly
 // marked "IGNORE LOB" (e.g. ALV, tracked in PPM). These are excluded from
-// template compliance and the leaderboard.
+// template compliance.
+// Whether an account is expected to keep LOB.Details current.
+// Operations and Hybrid are live and must maintain a status, so they are
+// scored for template compliance. A project still in Implementation on both
+// the LOB phase and the CREL state isn't expected to have one yet — its status
+// is shown but never scored. Anything else (On Hold, Delivery, or a phase and
+// state that disagree) is also left unscored, but labelled with the reason so
+// it isn't silently dropped.
+function phaseScope(row) {
+  const phase = (row.phase || '').trim();
+  const state = (row.state || '').trim();
+  const p = phase.toLowerCase(), s = state.toLowerCase();
+  if (isPointerLob(row))
+    return { phase, state, scored: false, reason: 'Pointer/ignore record', kind: 'pointer' };
+  if (p === 'operations' || p === 'hybrid')
+    return { phase, state, scored: true, reason: `${phase} — status expected`, kind: 'live' };
+  if (p === 'implementation' && s === 'implementation')
+    return { phase, state, scored: false, reason: 'Implementation — status not expected yet', kind: 'impl' };
+  if (!phase && !state)
+    return { phase, state, scored: true, reason: 'No phase recorded — scored by default', kind: 'live' };
+  return { phase, state, scored: false, reason: `${phase || '—'} / ${state || '—'} — not scored`, kind: 'other' };
+}
+
 function isPointerLob(row) {
   if (!row) return false;
   const s = (row.status || '');
@@ -628,44 +850,66 @@ function checkTemplate(status, row) {
   if (isPointerLob(row || { status })) return [];
   if (!status || status.trim().length < 20)
     return [{ sev: 'major', msg: 'No content to check against the template' }];
-  const t = status;
+
+  const idx = indexStatus(status);
   const d = [];
 
-  // Weekly update headings
-  if (!/Weekly\s+Accomplishments\s*:/i.test(t)) {
-    if (/Weekly\s+Wins\s*:/i.test(t))
-      d.push({ sev: 'minor', msg: 'Uses "Weekly Wins" — the template label is "Weekly Accomplishments"' });
-    else
-      d.push({ sev: 'major', msg: 'Missing the "Weekly Accomplishments:" heading' });
-  }
-  if (!/Issues\s*\/\s*Concerns\s*:/i.test(t)) {
-    if (/Issues\s*\/\s*Risks\s*:/i.test(t))
-      d.push({ sev: 'minor', msg: 'Uses "Issues/Risks" — the template label is "Issues/Concerns"' });
-    else if (/\bIssues\b/i.test(t))
-      d.push({ sev: 'minor', msg: '"Issues/Concerns:" heading is worded differently than the template' });
-    else
-      d.push({ sev: 'major', msg: 'Missing the "Issues/Concerns:" heading' });
-  }
-  if (!/\bChanges\s*:/i.test(t))              d.push({ sev: 'minor', msg: 'Missing the "Changes:" line' });
-  if (!/Upcoming\s+Milestones?\s*:/i.test(t)) d.push({ sev: 'minor', msg: 'Missing the "Upcoming Milestones:" line' });
-  if (!/Next\s+Week['\u2019]?s\s+Focus\s*:/i.test(t)) {
-    if (/Next\s+Weeks?\b/i.test(t))
-      d.push({ sev: 'minor', msg: 'Uses "Next Weeks"/"Next Weeks Focus" — the template label is "Next Week\u2019s Focus"' });
-    else
-      d.push({ sev: 'major', msg: 'Missing the "Next Week\u2019s Focus:" line' });
-  }
+  // What compliance judges, and deliberately does not:
+  //   • judged  — heading missing entirely, heading in the wrong place/order,
+  //               a non-standard heading name (e.g. "Risks" for "Issues/Concerns")
+  //   • ignored — ":" vs ";" vs "?" as the separator, capitalisation, spacing,
+  //               and ordinary spelling slips. Those are noise, not process.
+  const present = k => idx.fields[k] !== undefined;
+  const meta = k => idx.meta[k];
 
-  // Standing section headers
-  if (!/Service\s+Health\s+Reviews/i.test(t)) d.push({ sev: 'major', msg: 'Missing the "Service Health Reviews" section' });
-  if (!/Customer\s+Health/i.test(t))          d.push({ sev: 'major', msg: 'Missing the "Customer Health" section' });
-  if (!/Profitability/i.test(t))               d.push({ sev: 'major', msg: 'Missing the "Profitability" section' });
-  if (!/Lifecycle\s+Planning/i.test(t))       d.push({ sev: 'major', msg: 'Missing the "Lifecycle Planning" section' });
-  if (!/Renewal\s+Status/i.test(t))           d.push({ sev: 'major', msg: 'Missing the "Renewal Status" section' });
+  // Heading presence, in the canonical template sequence
+  const REQUIRED = [
+    { key:'weeklyWins',       label:'Weekly Accomplishments',            sev:'major' },
+    { key:'issues',           label:'Issues/Concerns',                   sev:'major' },
+    { key:'changes',          label:'Changes',                           sev:'minor' },
+    { key:'upcoming',         label:'Upcoming Milestones',               sev:'minor' },
+    { key:'nextFocus',        label:"Next Week's Focus",                 sev:'major' },
+    { key:'frequency',        label:'Frequency of service health reviews',sev:'minor' },
+    { key:'completed',        label:'Completed this period?',            sev:'minor' },
+    { key:'participation',    label:'Customer Participation',            sev:'minor' },
+    { key:'sla',              label:'SLA',                               sev:'minor' },
+    { key:'interruptions',    label:'Number of service interruptions',   sev:'minor' },
+    { key:'currentVersions',  label:'Current Versions',                  sev:'minor' },
+    { key:'nextVersion',      label:'Next Version or Decommission plan', sev:'minor' },
+    { key:'within9mo',        label:'Within 9 month of contract end?',   sev:'major' },
+    { key:'renewalFeedback',  label:'Customer feedback',                 sev:'minor' },
+    { key:'renewalNextSteps', label:'Next steps',                        sev:'minor' },
+  ];
 
-  // Field-label variants inside sections
-  if (/Customer\s+Health/i.test(t) && !/(^|\n)\s*SLA\s*:/i.test(t) && /Contractual\s+SLA\s*:/i.test(t))
-    d.push({ sev: 'minor', msg: 'Uses "Contractual SLA" — the template label is just "SLA"' });
-  if (!/-{5,}/.test(t))
+  REQUIRED.forEach(r => {
+    if (!present(r.key)) d.push({ sev: r.sev, msg: `Missing the "${r.label}" heading` });
+  });
+
+  // Standing section headers. A section counts as present if its header is
+  // there OR if any field belonging to it was filled in — a CSDM who wrote
+  // "Profitability Link: <url>" without a separate "Profitability" header has
+  // supplied the section's content, which is what actually matters.
+  const SECTIONS = [
+    { key:'shr',            label:'Service Health Reviews' },
+    { key:'customerHealth', label:'Customer Health' },
+    { key:'profitability',  label:'Profitability' },
+    { key:'lifecycle',      label:'Lifecycle Planning' },
+    { key:'renewal',        label:'Renewal Status' },
+  ];
+  const seen = idx.sectionsSeen.map(s => s.key);
+  SECTIONS.forEach(s => {
+    const headerSeen = seen.includes(s.key);
+    const hasContent = FIELD_DEFS.some(f => f.section === s.key && present(f.key));
+    if (!headerSeen && !hasContent)
+      d.push({ sev: 'major', msg: `Missing the "${s.label}" section header` });
+  });
+
+  // Deliberately NOT flagged: section ordering, heading wording variants,
+  // separator style (":" / ";" / "?"), capitalisation, and spelling slips.
+  // The values are read wherever they appear, so those are formatting noise
+  // rather than a process gap. Only genuinely absent sections and lines count.
+
+  if (!/-{5,}/.test(status))
     d.push({ sev: 'minor', msg: 'Missing the dashed divider between the weekly update and the standing sections' });
 
   return d;
@@ -1427,12 +1671,13 @@ function PortfolioView({ data, notes }) {
   const [search, setSearch] = useState('');
   const [filterOwner, setFilterOwner] = useState('all');
   const [openAcct, setOpenAcct] = useState(null);
+  const [phaseFilter, setPhaseFilter] = useState('all');
 
   const owners = useMemo(() => [...new Set(data.map(d => d.owner))].filter(Boolean).sort(), [data]);
 
   const scored = useMemo(() => data.map(r => {
     const s = parseStatus(r.status);
-    return { row: r, sections: s, domains: scoreDomains(r, s), flags: analyzeAccount(r, s) };
+    return { row: r, sections: s, domains: scoreDomains(r, s), flags: analyzeAccount(r, s), scope: phaseScope(r) };
   }), [data]);
 
   // Rollup counts per domain
@@ -1449,8 +1694,17 @@ function PortfolioView({ data, notes }) {
     const matchOwner = filterOwner === 'all' || x.row.owner === filterOwner;
     const st = domainFilter === 'all' ? null : x.domains[domainFilter]?.state;
     const matchDomain = domainFilter === 'all' || st === 'risk' || st === 'watch' || st === 'nodata';
-    return matchSearch && matchOwner && matchDomain;
-  }), [scored, search, filterOwner, domainFilter]);
+    const matchPhase = phaseFilter === 'all'
+      || (phaseFilter === 'live' && x.scope.kind === 'live')
+      || (phaseFilter === 'impl' && x.scope.kind === 'impl')
+      || (phaseFilter === 'unscored' && !x.scope.scored)
+      || (phaseFilter === x.row.phase);
+    return matchSearch && matchOwner && matchDomain && matchPhase;
+  }), [scored, search, filterOwner, domainFilter, phaseFilter]);
+
+  const phases = useMemo(() => [...new Set(data.map(d => d.phase))].filter(Boolean).sort(), [data]);
+  const liveCount = scored.filter(x => x.scope.kind === 'live').length;
+  const implCount = scored.filter(x => x.scope.kind === 'impl').length;
 
   // Group rows, worst-first inside each group
   const groups = useMemo(() => {
@@ -1506,6 +1760,13 @@ function PortfolioView({ data, notes }) {
           <option value="owner">Group by CSDM</option>
           <option value="none">No grouping</option>
         </select>
+        <select value={phaseFilter} onChange={e => setPhaseFilter(e.target.value)}>
+          <option value="all">All phases</option>
+          <option value="live">Operations / Hybrid ({liveCount})</option>
+          <option value="impl">Implementation only ({implCount})</option>
+          <option value="unscored">Not scored</option>
+          {phases.map(p => <option key={p} value={p}>{p}</option>)}
+        </select>
         <select value={domainFilter} onChange={e => setDomainFilter(e.target.value)}>
           <option value="all">All domains</option>
           {DOMAINS.map(d => <option key={d.key} value={d.key}>Needs attention: {d.label}</option>)}
@@ -1518,6 +1779,7 @@ function PortfolioView({ data, notes }) {
           <thead>
             <tr>
               <th className="acct-col">Account</th>
+              <th style={{textAlign:'left', minWidth:'112px'}}>Phase</th>
               {DOMAINS.map(d => <th key={d.key} title={DOMAIN_KEYS[d.key]}>{d.short}</th>)}
               <th style={{width:'30px'}}></th>
             </tr>
@@ -1526,7 +1788,7 @@ function PortfolioView({ data, notes }) {
             {groups.map(([gname, items]) => (
               <React.Fragment key={gname}>
                 {groupBy !== 'none' && (
-                  <tr className="grp"><td colSpan={DOMAINS.length + 2}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
+                  <tr className="grp"><td colSpan={DOMAINS.length + 3}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
                 )}
                 {items.map(x => {
                   const open = openAcct === x.row.lob;
@@ -1544,6 +1806,18 @@ function PortfolioView({ data, notes }) {
                             {notes.getNote(x.row.lob) && <span style={{color:'var(--blue)'}}> · 📝</span>}
                           </div>
                         </td>
+                        <td>
+                          <div style={{fontSize:'0.78rem', color: x.scope.scored ? 'var(--text)' : 'var(--text3)'}}>
+                            {x.row.phase || '—'}
+                          </div>
+                          <div className="lob-code">
+                            {x.row.state && x.row.state !== x.row.phase ? `CREL: ${x.row.state}` : ''}
+                          </div>
+                          {!x.scope.scored && (
+                            <span className="pill" style={{marginTop:'2px', fontSize:'0.62rem', color:'var(--text3)',
+                              background:'var(--surface3)', borderColor:'var(--border)'}}>not scored</span>
+                          )}
+                        </td>
                         {DOMAINS.map(d => {
                           const dm = x.domains[d.key];
                           const m = STATE_META[dm?.state || 'nodata'];
@@ -1560,7 +1834,7 @@ function PortfolioView({ data, notes }) {
                       </tr>
                       {open && (
                         <tr className="expand-row">
-                          <td colSpan={DOMAINS.length + 2}>
+                          <td colSpan={DOMAINS.length + 3}>
                             <DomainSummary domains={x.domains} />
                             <ExpandedRow row={x.row} notes={notes} />
                           </td>
@@ -1632,18 +1906,42 @@ function talkingPoints(row, s, domains, flags) {
   return pts;
 }
 
-// ── Compliance leaderboard ─────────────────────────────────────────────────
-// Ranks each CSDM by how consistently their updates follow the standard
+// ── Compliance ─────────────────────────────────────────────────────────────
+// Shows, per CSDM, how consistently their updates follow the standard
 // template. A "compliant" account has zero template deviations. Pointer /
 // ignored records (MPD, MPT, anything "SEE MPM" or "IGNORE LOB") are excluded
 // from the counts so they don't unfairly penalize an owner.
 function ComplianceView({ data }) {
+  const [openOwner, setOpenOwner] = useState(null);
+  const [view, setView] = useState('bycsdm');   // bycsdm | review
+  const [reviewOwner, setReviewOwner] = useState('all');
+  const [reviewSev, setReviewSev] = useState('all');
+  const [openAcct, setOpenAcct] = useState(null);
+  const [search, setSearch] = useState('');
+
+  // Phase decides who is even in scope: Operations/Hybrid must keep
+  // LOB.Details current. Projects sitting in Implementation on both the LOB
+  // phase and the CREL state are ignored outright — no status is expected yet,
+  // so they are not counted, ranked, or listed here at all.
+  const rows = useMemo(() => data
+    .filter(row => phaseScope(row).kind !== 'impl')
+    .map(row => {
+      const scope = phaseScope(row);
+      const devs = scope.scored ? checkTemplate(row.status, row) : [];
+      return { row, scope, devs,
+               major: devs.filter(d => d.sev === 'major').length,
+               minor: devs.filter(d => d.sev === 'minor').length };
+    }), [data]);
+
+  const implIgnored = useMemo(() => data.filter(r => phaseScope(r).kind === 'impl').length, [data]);
+
+  const inScope = rows.filter(r => r.scope.scored);
+  const offTemplate = inScope.filter(r => r.devs.length > 0);
+
   const stats = useMemo(() => {
     const byOwner = {};
-    data.forEach(row => {
-      if (isPointerLob(row)) return; // excluded from scoring
+    inScope.forEach(({ row, devs }) => {
       const owner = row.owner || 'Unassigned';
-      const devs = checkTemplate(row.status, row);
       if (!byOwner[owner]) byOwner[owner] = { owner, total: 0, compliant: 0, major: 0, minor: 0, tally: new Map(), accounts: [] };
       const o = byOwner[owner];
       o.total++;
@@ -1655,22 +1953,26 @@ function ComplianceView({ data }) {
       });
       o.accounts.push({ lob: row.lob, customer: row.customer, devs });
     });
-    return Object.values(byOwner).map(o => ({
-      ...o,
-      pct: o.total ? Math.round((o.compliant / o.total) * 100) : 100,
-    })).sort((a, b) => b.pct - a.pct || a.major - b.major || a.owner.localeCompare(b.owner));
-  }, [data]);
+    return Object.values(byOwner).map(o => ({ ...o, pct: o.total ? Math.round((o.compliant / o.total) * 100) : 100 }))
+      .sort((a, b) => b.pct - a.pct || a.major - b.major || a.owner.localeCompare(b.owner));
+  }, [inScope]);
 
-  const [openOwner, setOpenOwner] = useState(null);
-
-  const scored = data.filter(r => !isPointerLob(r));
-  const totalAcct = scored.length;
+  const totalAcct = inScope.length;
   const totalCompliant = stats.reduce((n, o) => n + o.compliant, 0);
   const teamPct = totalAcct ? Math.round((totalCompliant / totalAcct) * 100) : 100;
-  const excluded = data.length - scored.length;
+  const notScored = rows.filter(r => !r.scope.scored);
 
   const barColor = pct => pct >= 90 ? 'var(--green)' : pct >= 60 ? 'var(--yellow)' : 'var(--red)';
-  const medal = i => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : String(i + 1);
+
+  const reviewOwners = useMemo(() => [...new Set(offTemplate.map(r => r.row.owner))].filter(Boolean).sort(), [offTemplate]);
+  const reviewList = useMemo(() => offTemplate.filter(r => {
+    const q = search.toLowerCase();
+    const ms = !search || r.row.customer.toLowerCase().includes(q) || r.row.lob.toLowerCase().includes(q);
+    const mo = reviewOwner === 'all' || r.row.owner === reviewOwner;
+    const mv = reviewSev === 'all' || (reviewSev === 'major' ? r.major > 0 : r.major === 0 && r.minor > 0);
+    return ms && mo && mv;
+  }).sort((a, b) => b.major - a.major || b.devs.length - a.devs.length
+                  || a.row.customer.localeCompare(b.row.customer)), [offTemplate, search, reviewOwner, reviewSev]);
 
   return (
     <div>
@@ -1682,30 +1984,40 @@ function ComplianceView({ data }) {
         <div className="stat-card green" style={{cursor:'default'}}>
           <div className="stat-label">Compliant</div><div className="stat-value">{totalCompliant}</div>
         </div>
-        <div className="stat-card orange" style={{cursor:'default'}}>
-          <div className="stat-label">Off-Template</div><div className="stat-value">{totalAcct - totalCompliant}</div>
+        <div className={`stat-card orange ${view==='review'?'active':''}`}
+          onClick={() => setView(view === 'review' ? 'bycsdm' : 'review')}>
+          <div className="stat-label">Off-Template</div><div className="stat-value">{offTemplate.length}</div>
         </div>
         <div className="stat-card blue" style={{cursor:'default'}}>
           <div className="stat-label">CSDMs</div><div className="stat-value">{stats.length}</div>
         </div>
         <div className="stat-card" style={{cursor:'default'}}>
-          <div className="stat-label">Excluded</div><div className="stat-value">{excluded}</div>
+          <div className="stat-label">Not Scored</div><div className="stat-value">{notScored.length}</div>
+        </div>
+      </div>
+
+      <div className="tab-nav" style={{padding:0, marginBottom:'1rem', background:'transparent', borderBottom:'1px solid var(--border)'}}>
+        <div className={`tab${view==='bycsdm'?' active':''}`} onClick={() => setView('bycsdm')}>By CSDM</div>
+        <div className={`tab${view==='review'?' active':''}`} onClick={() => setView('review')}>
+          Review Off-Template
+          {offTemplate.length > 0 && <span className="badge badge-warn">{offTemplate.length}</span>}
         </div>
       </div>
 
       <div style={{marginBottom:'1rem', padding:'0.6rem 0.9rem', background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'8px', fontSize:'0.8rem', color:'var(--text2)'}}>
-        Ranked by share of accounts that fully follow the standard update template.
-        Bold items are <strong>major</strong> gaps (a missing heading or section); the rest are label wording.
-        {excluded > 0 && <span> {excluded} pointer/ignored record{excluded!==1?'s':''} (e.g. SEE MPM) excluded.</span>}
+        Scored: <strong>Operations</strong> and <strong>Hybrid</strong> projects, which are expected to keep LOB.Details current.
+        {implIgnored > 0 && <span> {implIgnored} project{implIgnored!==1?'s':''} in Implementation phase and state {implIgnored!==1?'are':'is'} ignored entirely.</span>}
+        {notScored.length > 0 && <span> {notScored.length} other record{notScored.length!==1?'s':''} (On Hold, pointer, or mismatched phase) also unscored.</span>}
+        {' '}Only <strong>missing sections and lines</strong> are flagged — heading wording, section order, separator style and spelling are ignored.
       </div>
 
+      {view === 'bycsdm' && (
       <div className="matrix-wrap">
         <table className="matrix">
           <thead>
             <tr>
-              <th style={{width:'46px', textAlign:'center'}}>Rank</th>
               <th className="acct-col">CSDM</th>
-              <th style={{minWidth:'200px'}}>Compliance</th>
+              <th style={{textAlign:'left', width:'90px'}}>Compliance</th>
               <th style={{textAlign:'center'}}>Compliant</th>
               <th style={{textAlign:'center'}}>Major</th>
               <th style={{textAlign:'center'}}>Minor</th>
@@ -1713,25 +2025,19 @@ function ComplianceView({ data }) {
             </tr>
           </thead>
           <tbody>
-            {stats.map((o, i) => {
+            {stats.map(o => {
               const open = openOwner === o.owner;
               const items = [...o.tally.entries()].sort((a, b) =>
                 (a[1].sev === 'major' ? 0 : 1) - (b[1].sev === 'major' ? 0 : 1) || b[1].n - a[1].n);
               return (
                 <React.Fragment key={o.owner}>
                   <tr className={`acct${open?' open':''}`} onClick={() => setOpenOwner(open ? null : o.owner)}>
-                    <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize: i<3?'1.1rem':'0.85rem', color:'var(--text2)'}}>{medal(i)}</td>
                     <td>
                       <div className="customer-name">{o.owner}</div>
                       <div className="lob-code">{o.total} account{o.total!==1?'s':''} scored</div>
                     </td>
                     <td>
-                      <div style={{display:'flex', alignItems:'center', gap:'0.5rem'}}>
-                        <div style={{flex:1, height:'8px', borderRadius:'4px', background:'var(--surface3)', overflow:'hidden', minWidth:'90px'}}>
-                          <div style={{width: o.pct + '%', height:'100%', background: barColor(o.pct)}} />
-                        </div>
-                        <span style={{fontFamily:'var(--mono)', fontSize:'0.82rem', fontWeight:600, color: barColor(o.pct), minWidth:'40px', textAlign:'right'}}>{o.pct}%</span>
-                      </div>
+                      <span style={{fontFamily:'var(--mono)', fontSize:'0.95rem', fontWeight:600, color: barColor(o.pct)}}>{o.pct}%</span>
                     </td>
                     <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize:'0.82rem', color:'var(--green)'}}>{o.compliant}/{o.total}</td>
                     <td style={{textAlign:'center', fontFamily:'var(--mono)', fontSize:'0.82rem', color: o.major?'var(--red)':'var(--text3)'}}>{o.major || '—'}</td>
@@ -1740,7 +2046,7 @@ function ComplianceView({ data }) {
                   </tr>
                   {open && (
                     <tr className="expand-row">
-                      <td colSpan={7}>
+                      <td colSpan={6}>
                         <div style={{padding:'0.9rem 1.25rem'}}>
                           {items.length === 0 ? (
                             <div className="no-flags">✓ Every scored account follows the template — nothing to coach.</div>
@@ -1757,7 +2063,12 @@ function ComplianceView({ data }) {
                               <div style={{display:'flex', flexWrap:'wrap', gap:'0.4rem'}}>
                                 {o.accounts.slice().sort((a,b) => b.devs.length - a.devs.length).map(a => (
                                   <span key={a.lob} className="pill" title={a.devs.map(d=>d.msg).join(' · ') || 'Follows the template'}
-                                    style={{background: a.devs.length ? 'var(--surface3)' : 'var(--green-bg)', borderColor: a.devs.length ? 'var(--border)' : 'var(--green-border)', color: a.devs.length ? 'var(--text2)' : 'var(--green)'}}>
+                                    style={{cursor: a.devs.length ? 'pointer' : 'default',
+                                      background: a.devs.length ? 'var(--surface3)' : 'var(--green-bg)',
+                                      borderColor: a.devs.length ? 'var(--border)' : 'var(--green-border)',
+                                      color: a.devs.length ? 'var(--text2)' : 'var(--green)'}}
+                                    onClick={e => { if (!a.devs.length) return; e.stopPropagation();
+                                      setView('review'); setReviewOwner(o.owner); setReviewSev('all'); setSearch(''); setOpenAcct(a.lob); }}>
                                     {a.devs.length ? '▤' : '✓'} {a.customer} <span style={{opacity:0.7}}>{a.devs.length ? a.devs.length : ''}</span>
                                   </span>
                                 ))}
@@ -1774,9 +2085,84 @@ function ComplianceView({ data }) {
           </tbody>
         </table>
         <div className="table-footer">
-          {stats.length} CSDMs · {totalAcct} accounts scored · {excluded} excluded · a compliant account has zero template deviations
+          {stats.length} CSDMs · {totalAcct} accounts scored · {notScored.length} not scored · a compliant account has zero template deviations
         </div>
       </div>
+      )}
+
+      {view === 'review' && (
+      <div>
+        <div className="filter-bar">
+          <input type="text" placeholder="Search customer or LOB..." value={search} onChange={e => setSearch(e.target.value)} />
+          <select value={reviewOwner} onChange={e => setReviewOwner(e.target.value)}>
+            <option value="all">All CSDMs</option>
+            {reviewOwners.map(o => <option key={o} value={o}>{o}</option>)}
+          </select>
+          <select value={reviewSev} onChange={e => setReviewSev(e.target.value)}>
+            <option value="all">All deviations</option>
+            <option value="major">Has a major gap</option>
+            <option value="minor">Minor only</option>
+          </select>
+          {(search || reviewOwner !== 'all' || reviewSev !== 'all') &&
+            <span className="clear-link" onClick={() => { setSearch(''); setReviewOwner('all'); setReviewSev('all'); }}>× Clear</span>}
+          <span style={{marginLeft:'auto', fontSize:'0.75rem', color:'var(--text3)'}}>
+            {reviewList.length} of {offTemplate.length} off-template
+          </span>
+        </div>
+
+        {reviewList.length === 0 && (
+          <div className="matrix-wrap"><div className="monday-empty" style={{color:'var(--green)'}}>
+            ✓ Nothing matches — every scored account here follows the template.
+          </div></div>
+        )}
+
+        {reviewList.map(r => {
+          const open = openAcct === r.row.lob;
+          return (
+            <div key={r.row.lob} className="oo-acct">
+              <div className="oo-acct-head" onClick={() => setOpenAcct(open ? null : r.row.lob)}>
+                <span style={{color: r.major ? 'var(--red)' : 'var(--yellow)', fontSize:'0.8rem'}}>▤</span>
+                <div className="oo-acct-name">
+                  {r.row.customer}
+                  <span style={{fontSize:'0.72rem', color:'var(--text3)', fontWeight:400, marginLeft:'0.4rem'}}>
+                    {r.row.lob} · {r.row.owner} · {r.row.phase}
+                  </span>
+                </div>
+                <span style={{fontFamily:'var(--mono)', fontSize:'0.72rem'}}>
+                  {r.major > 0 && <span style={{color:'var(--red)'}}>{r.major} major</span>}
+                  {r.major > 0 && r.minor > 0 && <span style={{color:'var(--text3)'}}> · </span>}
+                  {r.minor > 0 && <span style={{color:'var(--yellow)'}}>{r.minor} minor</span>}
+                </span>
+                <span style={{color:'var(--text3)', fontSize:'0.75rem'}}>{open?'▲':'▼'}</span>
+              </div>
+              {open && (
+                <div className="oo-body">
+                  <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>
+                    What's off template
+                  </div>
+                  {r.devs.map((d, i) => (
+                    <div key={i} className="analysis-flag template" style={{marginBottom:'0.3rem'}}>
+                      <span className="analysis-flag-icon">▤</span>
+                      <span>{d.sev === 'major' ? <strong>{d.msg}</strong> : d.msg}</span>
+                    </div>
+                  ))}
+                  <div style={{marginTop:'0.7rem'}} className="update-box">
+                    <div className="update-box-head">
+                      <span>LOB.Details status — as submitted</span>
+                      <button className="btn btn-ghost" style={{fontSize:'0.7rem', padding:'0.2rem 0.5rem', textTransform:'none', letterSpacing:0}}
+                        onClick={e => { e.stopPropagation(); navigator.clipboard && navigator.clipboard.writeText(r.row.status || ''); }}>
+                        ⎘ Copy
+                      </button>
+                    </div>
+                    <div className="update-box-body">{r.row.status || '(no status text provided)'}</div>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      )}
     </div>
   );
 }
