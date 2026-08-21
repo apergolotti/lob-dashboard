@@ -348,6 +348,76 @@ function parseDate(val) {
   return null;
 }
 
+// The CSDM sets Customer Sentiment and Operations as fields, and often also
+// states a colour in the narrative ("Customer Sentiment: Yellow", "Operations
+// status: Green"). Pull those out so the two can be checked against each
+// other — a field left Green while the text says Yellow is a real signal.
+
+function normColor(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (/^green/.test(s)) return 'Green';
+  if (/^(yellow|amber)/.test(s)) return 'Yellow';
+  if (/^red/.test(s)) return 'Red';
+  return null;
+}
+
+// Some updates state several colours ("Status: Yellow" and "Customer
+// sentiment: Green" in the same note). Rank the labels so the most specific
+// one wins rather than whichever appears first.
+function sentimentRank(label) {
+  if (/customer\s+sentiment|^sentiment$|customer\s+experience|customer\s+health|overall\s+temperature/i.test(label)) return 3;
+  if (/overall\s+status|overall\s+project\s+health|project\s+health/i.test(label)) return 2;
+  if (/^status$|project\s+status|^temperature$/i.test(label)) return 1;
+  return 0;
+}
+function operationsRank(label) {
+  if (/operations?\s+status|operational\s+status/i.test(label)) return 2;
+  if (/^operations?$|^operational$/i.test(label)) return 1;
+  return 0;
+}
+
+function statedStatuses(text) {
+  const out = { sentiment: null, operations: null };
+  if (!text) return out;
+  let sRank = 0, oRank = 0;
+  String(text).split('\n').forEach(line => {
+    const m = line.trim().match(/^[\s\-\*\u2022\u00b7\u0095\uf0b7]*([A-Za-z][^:;\n]{0,60}?)\s*[:;]\s*(green|yellow|amber|red)\b/i);
+    if (!m) return;
+    const label = m[1].trim().replace(/\s+/g, ' ');
+    const color = normColor(m[2]);
+    if (!color) return;
+    // A combined label ("Project status and/or operations status") speaks to both
+    const both = /operations?/i.test(label) && /(sentiment|overall|project\s+status|customer)/i.test(label);
+    if (both) {
+      if (sRank < 2) { out.sentiment = color; sRank = 2; }
+      if (oRank < 2) { out.operations = color; oRank = 2; }
+      return;
+    }
+    const orank = operationsRank(label);
+    if (orank > oRank) { out.operations = color; oRank = orank; return; }
+    if (orank > 0) return;
+    const srank = sentimentRank(label);
+    if (srank > sRank) { out.sentiment = color; sRank = srank; }
+  });
+  return out;
+}
+
+// SLA attainment as a number. The field is often prose, so only trust a
+// percentage that appears early in the value — "Aug SLA 99.85% (as of 8/14)"
+// is an attainment figure, but "...30 min/4 hours with 90% success rate" is a
+// response-time description and must not be read as a 90% SLA. Returns null
+// when nothing looks like an attainment figure.
+function slaPercent(v) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  const m = s.match(/(\d{1,3}(?:\.\d+)?)\s*%/);
+  if (m && m.index <= 40) return parseFloat(m[1]);
+  // A bare number on its own ("99.5", "100")
+  const bare = s.match(/^(\d{1,3}(?:\.\d+)?)$/);
+  if (bare) return parseFloat(bare[1]);
+  return null;
+}
+
 // Interruption counts are written as prose as often as numbers:
 //   "3  (RCA PRB0019048)"                    -> 3
 //   "none in PROD in June 2026"              -> 0   (not 2026)
@@ -479,14 +549,33 @@ function clean(v) {
   return v;
 }
 
-// True when an Issues/Concerns entry is really a "nothing to report" note
-// (e.g. "No issues", "No customer issues", "None at this time", "Nothing to report").
+// True when an Issues/Concerns entry is really a "nothing to report" note.
+// CSDMs rarely write a bare "None" — it is usually a negation followed by
+// reassurance ("None at this time. Project health and customer sentiment
+// remain green."). Judge the first sentence: if it negates, the entry counts
+// as no issues, unless it is qualified ("No major issues, but…") or a later
+// sentence raises a real problem.
 function isNoIssues(v) {
   if (!v) return true;
-  const s = v.trim().toLowerCase().replace(/[.\u2013\-]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (['no','none','nil','na','n a'].includes(s)) return true;
-  if (/^(no|none|nil|nothing)\b/.test(s) && /(issue|concern|risk|report|problem)/.test(s) && s.split(' ').length <= 6) return true;
-  return false;
+  const norm = String(v).trim()
+    .replace(/^[\s\-\*\#>\u2022\u00b7\u25cf\u25aa\u25e6\u2023\u2043\u00a0\u0095\uf0b7]+/, '')
+    .toLowerCase().replace(/\s+/g, ' ').trim();
+  const bare = norm.replace(/[.!]/g, '').trim();
+  if (['no','none','nil','na','n/a','n a','-','no issues','none at this time'].includes(bare)) return true;
+
+  const parts = norm.split(/[.!;]/).map(x => x.trim()).filter(Boolean);
+  const first = parts[0] || norm;
+  const rest = parts.slice(1).join('. ');
+
+  const negates = /^(no|none|nil|nothing|n\/a)\b/.test(first);
+  const qualified = /\b(but|however|although|except|aside from|other than|apart from)\b/.test(first);
+  if (!negates || qualified) return false;
+  if (first.split(' ').length > 10) return false;
+
+  // A later sentence that names a real problem overrides the opening negation
+  if (/\b(issue|concern|risk|problem|outage|incident|escalat|delay|complain|dissatisf|churn|blocker|fail)\b/.test(rest))
+    return false;
+  return true;
 }
 
 // True when a field contains placeholder or non-answer text
@@ -494,7 +583,14 @@ function isPlaceholder(v) {
   if (!v) return false;
   const s = v.trim().toLowerCase();
   if (['tbd','tbc','to be determined','to be confirmed','pending'].includes(s)) return true;
-  if (v.includes('- version, date, contract needs:') && v.trim().startsWith('- version')) return true;
+  // The template prints a hint on the Next Version line:
+  //   "Next Version or Decommission plan: - version, date, contract needs:"
+  // That is a placeholder only when nothing was written after it. CSDMs who
+  // answer alongside the hint have genuinely filled the field in.
+  if (/-\s*version,\s*date,\s*contract\s*needs/i.test(v)) {
+    const rest = v.replace(/-?\s*version,\s*date,\s*contract\s*needs\s*:?/i, '').trim();
+    return rest === '' || rest === '-';
+  }
   return false;
 }
 
@@ -555,7 +651,7 @@ const FIELD_DEFS = [
   { key:'participation', label:'Customer Participation', section:'shr', multiline:true,
     aliases:['customer participation','service health review participation','participation'] },
   { key:'shrLink', label:'SHR Link', section:'shr', multiline:false, ambiguous:true,
-    aliases:['link','links','cx dashboard','dashboard link'] },
+    aliases:['link','links','cx dashboard','dashboard link','link to presentation folder','presentation folder','link to presentation'] },
 
   { key:'sla', label:'SLA', section:'customerHealth', multiline:false,
     aliases:['sla','sla attainment','sla performance','contract sla','sla status'] },
@@ -698,7 +794,18 @@ function indexStatus(text) {
 
   lines.forEach((raw, i) => {
     const line = raw.replace(/\s+$/, '');
-    const trimmed = line.trim();
+    const plain = line.trim();
+
+    // The dashed divider closes the weekly block. Test it before stripping
+    // bullet/dash prefixes, otherwise "-----" is reduced to an empty string
+    // and gets appended to whatever field was being read.
+    if (/^[\-_=]{5,}$/.test(plain)) { flush(); return; }
+
+    // Word/Outlook bullets arrive as assorted glyphs (and, from a Windows-1252
+    // export, as a stray 0x95 control character); some CSDMs prefix headings
+    // with markdown hashes. Strip them so "# SLA: 99.5%" is still a label.
+    const trimmed = plain.replace(/^[\s\-\*\#>\u2022\u00b7\u25cf\u25aa\u25e6\u2023\u2043\u00a0\u0095\uf0b7]+/, '');
+    const hadPrefix = trimmed !== plain;
 
     // A bare section header on its own line
     const bare = trimmed && !/[:;]/.test(trimmed) ? matchSection(trimmed) : null;
@@ -709,20 +816,16 @@ function indexStatus(text) {
       return;
     }
 
-    // The dashed divider closes the weekly block — never let it become part
-    // of the preceding field's value.
-    if (/^[\-_=]{5,}$/.test(trimmed)) { flush(); return; }
-
     // Split a line into label + value. Three accepted separators:
     //   "Label: value"  "Label; value"  and  "Label? value"
     // The question form matters because the template's own wording ends in a
     // question mark and many CSDMs answer it without adding a colon at all
     // ("Within 9 month of contract end? Yes", "Completed this period? Yes").
     let rawLabel = null, rest = null;
-    let m = trimmed.match(/^[\-\*\u2022\s]*([A-Za-z][^:;\n]{1,110}?)\s*[:;]\s*(.*)$/);
+    let m = trimmed.match(/^[\s\-\*\#>\u2022\u00b7\u25cf\u25aa\u25e6\u2023\u2043\u00a0\u0095\uf0b7]*([A-Za-z][^:;\n]{1,110}?)\s*[:;]\s*(.*)$/);
     if (m) { rawLabel = m[1].trim(); rest = m[2]; }
     else {
-      m = trimmed.match(/^[\-\*\u2022\s]*([A-Za-z][^:;?\n]{1,110}\?)\s*(.*)$/);
+      m = trimmed.match(/^[\s\-\*\#>\u2022\u00b7\u25cf\u25aa\u25e6\u2023\u2043\u00a0\u0095\uf0b7]*([A-Za-z][^:;?\n]{1,110}\?)\s*(.*)$/);
       if (m) { rawLabel = m[1].trim(); rest = m[2]; }
     }
 
@@ -754,7 +857,11 @@ function indexStatus(text) {
         if (!hit.def.multiline && String(rest).trim() !== '') flush();
         return;
       }
-      // Unrecognised label ends any multiline capture so we don't swallow it
+      // Unrecognised label. A bulleted line is content, not a heading — CSDMs
+      // write things like "- Internal: SHR deck completed" or
+      // "- Ongoing transition to Viya 4 (LOB: TBB)" inside a field, and those
+      // must stay with the field rather than silently ending it.
+      if (hadPrefix && current) { current.buf.push(line); return; }
       flush();
       return;
     }
@@ -822,12 +929,21 @@ function parseStatus(status) {
   const f = idx.fields;
   const get = k => clean(f[k]);
   // Yes/no fields: "No" is a real answer, not an empty value, so these keep
-  // whatever the CSDM wrote instead of being blanked out by clean().
+  // whatever the CSDM wrote instead of being blanked out by clean(). They are
+  // also capped to the first line — when the answer sits under the label the
+  // parser reads on until the next heading, which can otherwise pull a whole
+  // renewal narrative into a yes/no field.
   const keep = k => {
     const v = f[k];
     if (v === undefined || v === null) return null;
     const s = String(v).trim();
     return s === '' || s === '-' ? null : s;
+  };
+  const keepLine = k => {
+    const v = keep(k);
+    if (!v) return null;
+    const first = v.split('\n').map(x => x.trim()).filter(Boolean)[0];
+    return first || null;
   };
   const out = {
     reportedDate: get('reportedDate'),
@@ -837,7 +953,7 @@ function parseStatus(status) {
     upcoming:     get('upcoming'),
     nextFocus:    get('nextFocus'),
     frequency:    get('frequency'),
-    completed:    keep('completed'),
+    completed:    keepLine('completed'),
     participation:keep('participation'),
     shrLink:      get('shrLink') || sectionUrl(idx, 'shr'),
     sla:          get('sla'),
@@ -845,13 +961,20 @@ function parseStatus(status) {
     meetingNotesLink: get('meetingNotesLink'),
     profitabilityLink:get('profitabilityLink') || sectionUrl(idx, 'profitability'),
     currentVersions:  get('currentVersions'),
-    nextVersion:  get('nextVersion'),
-    within9mo:    keep('within9mo'),
+    nextVersion:  (() => {
+      const v = get('nextVersion');
+      if (!v) return v;
+      // Drop the template's inline hint so the real answer displays cleanly
+      const stripped = v.replace(/^-?\s*version,\s*date,\s*contract\s*needs\s*:?\s*/i, '').trim();
+      return stripped === '' ? v : stripped;
+    })(),
+    within9mo:    keepLine('within9mo'),
     renewalFeedback:  get('renewalFeedback'),
     renewalNextSteps: get('renewalNextSteps'),
     renewalLink:  get('renewalLink') || sectionUrl(idx, 'renewal'),
     renewalRaw:   sectionText(idx, 'renewal'),
     lifecycleRaw: sectionText(idx, 'lifecycle'),
+    stated:       statedStatuses(status),
     _idx: idx,
   };
   return out;
@@ -1036,6 +1159,15 @@ function analyzeAccount(row, sections) {
   }
 
   // ── Status consistency ────────────────────────────────────────────────────
+  // ── Status consistency ────────────────────────────────────────────────────
+  // The CSDM sets the status fields and often restates a colour in the text.
+  // When the two disagree, the field is usually the one left stale.
+  const st = sections.stated || {};
+  if (st.sentiment && st.sentiment !== row.sentiment)
+    flags.push({ type: 'warn', msg: `Customer Sentiment field is ${row.sentiment} but the update says ${st.sentiment} — which is right?` });
+  if (st.operations && st.operations !== row.operations)
+    flags.push({ type: 'warn', msg: `Operations field is ${row.operations} but the update says ${st.operations} — which is right?` });
+
   if (issues && row.sentiment === 'Green')
     flags.push({ type: 'warn', msg: 'Issues listed but Customer Sentiment is Green — may be understating risk' });
   if (issues && row.operations === 'Green')
@@ -1061,8 +1193,8 @@ function analyzeAccount(row, sections) {
       flags.push({ type: 'warn', msg: `${n} service interruptions in past 3 months — discuss impact and resolution plan` });
   }
   if (sections.sla) {
-    const pct = parseFloat(sections.sla.replace(/[^0-9.]/g, ''));
-    if (!isNaN(pct) && pct < 99.0)
+    const pct = slaPercent(sections.sla);
+    if (pct != null && pct < 99.0)
       flags.push({ type: 'warn', msg: `SLA at ${sections.sla} — below 99% threshold, discuss impact with CSDM` });
   }
 
@@ -1264,9 +1396,9 @@ function scoreDomains(row, s) {
       bits.push(`Sentiment ${row.sentiment} / Ops ${row.operations}`);
     }
     if (s.sla) {
-      const pct = parseFloat(s.sla.replace(/[^0-9.]/g, ''));
-      if (!isNaN(pct) && pct < 99) { state = 'risk'; bits.push(`SLA ${s.sla}`); }
-      else bits.push(`SLA ${s.sla}`);
+      const pct = slaPercent(s.sla);
+      if (pct != null && pct < 99) { state = 'risk'; bits.push(`SLA ${snip(s.sla, 40)}`); }
+      else bits.push(`SLA ${snip(s.sla, 40)}`);
     }
     const n = interruptionCount(s.interruptions);
     if (n !== null && !isNaN(n)) {
@@ -1766,8 +1898,13 @@ function PortfolioView({ data, notes }) {
     const s = parseStatus(r.status);
     const domains = scoreDomains(r, s);
     const flags = analyzeAccount(r, s);
+    const stated = s.stated || {};
     return { row: r, sections: s, domains, flags,
              points: talkingPoints(r, s, domains, flags),
+             mismatch: {
+               sentiment: stated.sentiment && stated.sentiment !== r.sentiment ? stated.sentiment : null,
+               operations: stated.operations && stated.operations !== r.operations ? stated.operations : null,
+             },
              scope: phaseScope(r), platform: platformInfo(r), hosting: hostingInfo(r),
              restrict: restrictionInfo(r) };
   }), [data]);
@@ -1795,6 +1932,8 @@ function PortfolioView({ data, notes }) {
       || (attrFilter === 'legacy' && x.platform.legacy)
       || (attrFilter === 'legacyHost' && x.hosting.tier === 'Legacy')
       || (attrFilter === 'restricted' && x.restrict.restricted)
+      || (attrFilter === 'mismatch' && (x.mismatch.sentiment || x.mismatch.operations))
+      || (attrFilter === 'nongreen' && (x.row.sentiment !== 'Green' || x.row.operations !== 'Green'))
       || (attrFilter.startsWith('region:') && x.row.region === attrFilter.slice(7))
       || (attrFilter.startsWith('sol:') && x.row.solution === attrFilter.slice(4));
     return matchSearch && matchOwner && matchDomain && matchPhase && matchAttr;
@@ -1805,6 +1944,8 @@ function PortfolioView({ data, notes }) {
   const legacyCount = scored.filter(x => x.platform.legacy).length;
   const legacyHostCount = scored.filter(x => x.hosting.tier === 'Legacy').length;
   const restrictedCount = scored.filter(x => x.restrict.restricted).length;
+  const mismatchCount = scored.filter(x => x.mismatch.sentiment || x.mismatch.operations).length;
+  const nonGreenCount = scored.filter(x => x.row.sentiment !== 'Green' || x.row.operations !== 'Green').length;
 
   const phases = useMemo(() => [...new Set(data.map(d => d.phase))].filter(Boolean).sort(), [data]);
   const liveCount = scored.filter(x => x.scope.kind === 'live').length;
@@ -1876,6 +2017,8 @@ function PortfolioView({ data, notes }) {
           {legacyCount > 0 && <option value="legacy">Legacy platform ({legacyCount})</option>}
           {legacyHostCount > 0 && <option value="legacyHost">Legacy hosting ({legacyHostCount})</option>}
           {restrictedCount > 0 && <option value="restricted">Access restricted ({restrictedCount})</option>}
+          {nonGreenCount > 0 && <option value="nongreen">Non-green sentiment or ops ({nonGreenCount})</option>}
+          {mismatchCount > 0 && <option value="mismatch">Status field ≠ update text ({mismatchCount})</option>}
           {regions.map(r => <option key={r} value={'region:'+r}>Region: {r}</option>)}
           {solutions.map(s => <option key={s} value={'sol:'+s}>Solution: {snip(s, 28)}</option>)}
         </select>
@@ -1911,6 +2054,8 @@ function PortfolioView({ data, notes }) {
           <thead>
             <tr>
               <th className="acct-col">Account</th>
+              <th style={{textAlign:'center', minWidth:'86px'}} title="Customer Sentiment field set by the CSDM (u_status_overall)">Sentiment</th>
+              <th style={{textAlign:'center', minWidth:'86px'}} title="Operations status field set by the CSDM (u_status_operations)">Ops</th>
               <th style={{textAlign:'left', minWidth:'112px'}}>Phase</th>
               <th style={{textAlign:'left', minWidth:'96px'}} title="SAS software platform version — 9.x and Viya 3.x are legacy">Platform</th>
               <th style={{textAlign:'left', minWidth:'104px'}} title="Hosting provider and Legacy/NextGen tier">Hosting</th>
@@ -1923,7 +2068,7 @@ function PortfolioView({ data, notes }) {
             {groups.map(([gname, items]) => (
               <React.Fragment key={gname}>
                 {groupBy !== 'none' && (
-                  <tr className="grp"><td colSpan={DOMAINS.length + 6}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
+                  <tr className="grp"><td colSpan={DOMAINS.length + 8}>{gname} — {items.length} account{items.length!==1?'s':''}</td></tr>
                 )}
                 {items.map(x => {
                   const open = openAcct === x.row.lob;
@@ -1945,6 +2090,24 @@ function PortfolioView({ data, notes }) {
                             {x.points.length > 0 && <span style={{color:'var(--yellow)'}}> · {x.points.length} talking pt{x.points.length>1?'s':''}</span>}
                             {notes.getNote(x.row.lob) && <span style={{color:'var(--blue)'}}> · 📝</span>}
                           </div>
+                        </td>
+                        <td style={{textAlign:'center'}}>
+                          <StatusBadge status={x.row.sentiment} />
+                          {x.mismatch.sentiment && (
+                            <div className="lob-code" style={{color:'var(--orange)'}}
+                              title={`The update text says ${x.mismatch.sentiment}`}>
+                              ≠ text says {x.mismatch.sentiment}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{textAlign:'center'}}>
+                          <StatusBadge status={x.row.operations} />
+                          {x.mismatch.operations && (
+                            <div className="lob-code" style={{color:'var(--orange)'}}
+                              title={`The update text says ${x.mismatch.operations}`}>
+                              ≠ text says {x.mismatch.operations}
+                            </div>
+                          )}
                         </td>
                         <td>
                           <div style={{fontSize:'0.78rem', color: x.scope.scored ? 'var(--text)' : 'var(--text3)'}}>
@@ -1992,7 +2155,7 @@ function PortfolioView({ data, notes }) {
                       </tr>
                       {open && (
                         <tr className="expand-row">
-                          <td colSpan={DOMAINS.length + 6}>
+                          <td colSpan={DOMAINS.length + 8}>
                             <AccountAttributes x={x} />
                             <DomainSummary domains={x.domains} />
                             <CoachingPanel points={x.points} flags={x.flags} row={x.row} />
