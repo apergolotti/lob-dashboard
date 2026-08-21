@@ -348,6 +348,26 @@ function parseDate(val) {
   return null;
 }
 
+// Interruption counts are written as prose as often as numbers:
+//   "3  (RCA PRB0019048)"                    -> 3
+//   "none in PROD in June 2026"              -> 0   (not 2026)
+//   "None in PROD for the week of 8/2"       -> 0   (not 8)
+// Strip years, dates and ticket references first, then take the first small
+// number; if nothing numeric survives but the text says none/zero, it's 0.
+function interruptionCount(v) {
+  if (v == null) return null;
+  const cleaned = String(v).toLowerCase()
+    .replace(/\b(?:prb|ritm|inc|chg|task|crq)\s*0*\d+/g, ' ')      // ticket refs
+    .replace(/\b\d{1,3}(?:\.\d+)?\s*%/g, ' ')                       // percentages
+    .replace(/\b\d{1,2}\s*[\/-]\s*\d{1,2}(?:\s*[\/-]\s*\d{2,4})?\b/g, ' ') // dates
+    .replace(/\b(?:19|20)\d{2}\b/g, ' ')                            // years
+    .replace(/\bq[1-4]\b/g, ' ');
+  const m = cleaned.match(/\b(\d{1,3})\b/);
+  if (m) return parseInt(m[1], 10);
+  if (/\b(none|no|nil|zero|n\s*\/?\s*a)\b/.test(cleaned)) return 0;
+  return null;
+}
+
 // First integer in a string — "3  (RCA PRB0019048)" is 3 interruptions, not
 // 30019048. Stripping every non-digit would swallow ticket numbers.
 function firstInt(v) {
@@ -1009,7 +1029,7 @@ function analyzeAccount(row, sections) {
 
   // ── Service health ────────────────────────────────────────────────────────
   if (interruptions) {
-    const n = firstInt(interruptions);
+    const n = interruptionCount(interruptions);
     if (!isNaN(n) && n >= 3)
       flags.push({ type: 'warn', msg: `${n} service interruptions in past 3 months — discuss impact and resolution plan` });
   }
@@ -1217,7 +1237,7 @@ function scoreDomains(row, s) {
       if (!isNaN(pct) && pct < 99) { state = 'risk'; bits.push(`SLA ${s.sla}`); }
       else bits.push(`SLA ${s.sla}`);
     }
-    const n = firstInt(s.interruptions);
+    const n = interruptionCount(s.interruptions);
     if (n !== null && !isNaN(n)) {
       if (n >= 3) { state = 'risk'; bits.push(`${n} interruptions`); }
       else if (n >= 1) { if (state === 'good') state = 'watch'; bits.push(`${n} interruption${n>1?'s':''}`); }
