@@ -776,6 +776,26 @@ function indexStatus(text) {
   return { fields, meta, entries, sectionsSeen, lines: src };
 }
 
+// First URL anywhere in a section, counting the header line itself. CSDMs
+// often skip the "Link:" label and just paste the URL under (or beside) the
+// section heading — "Profitability:" followed by the SharePoint address.
+function sectionUrl(idx, sectionKey) {
+  const lines = idx.lines.split('\n');
+  const starts = idx.sectionsSeen.map(s => s.line).sort((a, b) => a - b);
+  const s = idx.sectionsSeen.find(x => x.key === sectionKey);
+  let slice;
+  if (s) {
+    const next = starts.find(l => l > s.line);
+    slice = lines.slice(s.line, next === undefined ? lines.length : next);
+  } else {
+    const own = idx.entries.filter(e => e.def.section === sectionKey);
+    if (!own.length) return null;
+    slice = lines.slice(Math.min(...own.map(e => e.line)), Math.max(...own.map(e => e.line)) + 3);
+  }
+  const m = slice.join('\n').match(/https?:\/\/[^\s\n)>\]]+/);
+  return m ? m[0] : null;
+}
+
 // Reconstruct the raw text of one section (used for the Renewals tab)
 function sectionText(idx, sectionKey) {
   const lines = idx.lines.split('\n');
@@ -819,17 +839,17 @@ function parseStatus(status) {
     frequency:    get('frequency'),
     completed:    keep('completed'),
     participation:keep('participation'),
-    shrLink:      get('shrLink'),
+    shrLink:      get('shrLink') || sectionUrl(idx, 'shr'),
     sla:          get('sla'),
     interruptions:keep('interruptions'),
     meetingNotesLink: get('meetingNotesLink'),
-    profitabilityLink:get('profitabilityLink'),
+    profitabilityLink:get('profitabilityLink') || sectionUrl(idx, 'profitability'),
     currentVersions:  get('currentVersions'),
     nextVersion:  get('nextVersion'),
     within9mo:    keep('within9mo'),
     renewalFeedback:  get('renewalFeedback'),
     renewalNextSteps: get('renewalNextSteps'),
-    renewalLink:  get('renewalLink'),
+    renewalLink:  get('renewalLink') || sectionUrl(idx, 'renewal'),
     renewalRaw:   sectionText(idx, 'renewal'),
     lifecycleRaw: sectionText(idx, 'lifecycle'),
     _idx: idx,
@@ -844,7 +864,13 @@ function computeMissing(status) {
   if (!status || status.trim().length < 20) return [{ key: 'all', label: 'Entire update is blank' }];
   const idx = indexStatus(status);
   const raw = idx.fields;
-  const present = k => raw[k] !== undefined && String(raw[k]).trim() !== '' && String(raw[k]).trim() !== '-';
+  // The three link fields also count as supplied when the URL was pasted into
+  // the section without a "Link:" label.
+  const SECTION_OF_LINK = { shrLink: 'shr', profitabilityLink: 'profitability', renewalLink: 'renewal' };
+  const present = k => {
+    if (raw[k] !== undefined && String(raw[k]).trim() !== '' && String(raw[k]).trim() !== '-') return true;
+    return SECTION_OF_LINK[k] ? !!sectionUrl(idx, SECTION_OF_LINK[k]) : false;
+  };
   const within9 = /yes/i.test(String(raw.within9mo || ''));
   const wanted = TEMPLATE_ORDER.filter(k => {
     if (k === 'issues') return false;
