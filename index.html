@@ -831,6 +831,7 @@ function parseStatus(status) {
     renewalNextSteps: get('renewalNextSteps'),
     renewalLink:  get('renewalLink'),
     renewalRaw:   sectionText(idx, 'renewal'),
+    lifecycleRaw: sectionText(idx, 'lifecycle'),
     _idx: idx,
   };
   return out;
@@ -1088,6 +1089,10 @@ function analyzeAccount(row, sections) {
     flags.push({ type: 'fix', msg: 'Next Version/Decommission Plan still contains template placeholder text' });
   if (currentVersions && isPlaceholder(currentVersions))
     flags.push({ type: 'fix', msg: 'Current Versions contains placeholder text — CSDM to fill in actual versions' });
+  // A documented plan with no version numbers is a small, specific ask rather
+  // than a generic "field is blank".
+  if (!currentVersions && sections.lifecycleRaw && sections.lifecycleRaw.trim().length >= 20)
+    flags.push({ type: 'fix', msg: 'Lifecycle plan is documented but no version numbers — add current and target versions' });
   if (isWithin9 && renewalFeedback && isPlaceholder(renewalFeedback))
     flags.push({ type: 'fix', msg: 'Renewal feedback is "TBD" — needs real customer sentiment documented' });
   if (isWithin9 && renewalNextSteps && isPlaceholder(renewalNextSteps))
@@ -1261,16 +1266,42 @@ function scoreDomains(row, s) {
     d.serviceReviews = { state: 'watch', label: 'Cadence set, none this period', detail: bits.join(' · ') };
   })();
 
-  // Lifecycle Planning — current versions known + forward plan
+  // Lifecycle Planning — current versions known + a forward plan.
+  // Plenty of CSDMs write a genuine upgrade plan as free text under the
+  // section heading rather than under "Current Versions:" / "Next Version:".
+  // A plan with dates is still a plan, so it scores as planned; the missing
+  // version numbers surface as an update-quality item rather than a grey
+  // "not documented" domain.
   (() => {
     const cur = s.currentVersions, next = s.nextVersion;
     const nextReal = next && !isPlaceholder(next) ? next : null;
-    if (!cur && !nextReal) { d.lifecycle = { state: 'nodata', label: 'Not documented', detail: 'No versions or plan recorded' }; return; }
-    if (!nextReal) { d.lifecycle = { state: 'watch', label: 'No forward plan', detail: cur ? `On ${snip(cur, 50)}` : '—' }; return; }
-    if (/decommission|end of contract|sunset|retire/i.test(nextReal))
-      { d.lifecycle = { state: 'risk', label: 'Decommission planned', detail: snip(nextReal, 60) }; return; }
-    if (!cur) { d.lifecycle = { state: 'watch', label: 'Plan set, versions unknown', detail: snip(nextReal, 60) }; return; }
-    d.lifecycle = { state: 'good', label: 'Planned', detail: `${snip(cur,40)} → ${snip(nextReal,40)}` };
+    const raw = (s.lifecycleRaw || '').trim();
+    const planText = (raw.length >= 20 && (
+      /\b\d{1,2}\s*[\/-]\s*\d{1,2}\b/.test(raw) ||
+      /\b20\d\d(?:\.\d\d)?\b/.test(raw) ||
+      /\b(?:upgrade|migrat|complete|scheduled|planned|decommission|sunset|retire)/i.test(raw)
+    )) ? raw : null;
+
+    // Only real decommission language counts. The template's own heading
+    // ("Next Version or Decommission plan") contains the word, and CSDMs write
+    // it with or without a colon, bullet or hash — drop any line that is
+    // clearly that heading before testing.
+    const planForRisk = (planText || '')
+      .split('\n')
+      .filter(l => !/next\s+version.*decommission/i.test(l))
+      .join('\n');
+    if (/decommission|end of contract|sunset|retire/i.test(nextReal || '')
+        || /decommission|sunset|retire/i.test(planForRisk))
+      { d.lifecycle = { state: 'risk', label: 'Decommission planned', detail: snip(nextReal || planForRisk, 60) }; return; }
+    if (cur && nextReal)
+      { d.lifecycle = { state: 'good', label: 'Planned', detail: `${snip(cur,40)} → ${snip(nextReal,40)}` }; return; }
+    if (nextReal)
+      { d.lifecycle = { state: 'good', label: 'Planned, versions not listed', detail: snip(nextReal, 60) }; return; }
+    if (planText)
+      { d.lifecycle = { state: 'good', label: 'Plan documented, versions not listed', detail: snip(planText, 70) }; return; }
+    if (cur)
+      { d.lifecycle = { state: 'watch', label: 'No forward plan', detail: `On ${snip(cur, 50)}` }; return; }
+    d.lifecycle = { state: 'nodata', label: 'Not documented', detail: 'No versions or plan recorded' };
   })();
 
   // Renewal Status — driven by the real contract end date when we have one,
@@ -2104,6 +2135,7 @@ function qcShort(msg) {
   m = m.replace(/^(.*?)\s*still contains template placeholder text$/, '$1 — placeholder');
   m = m.replace(/ is "TBD" — needs.*$/, ' — TBD');
   m = m.replace(/^Weekly Accomplishments looks like filler.*$/, 'Weekly Accomplishments — filler');
+  m = m.replace(/^Lifecycle plan is documented but no version numbers.*$/, 'Add version numbers to plan');
   // Shorten the longest template field names so chips stay compact
   const ABBREV = [
     [/Next Version(?: or|\/)\s*Decommission\s*[Pp]lan/g, 'Next Version'],
