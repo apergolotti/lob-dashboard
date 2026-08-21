@@ -2012,10 +2012,23 @@ function CoachingPanel({ points, flags, row }) {
   // from both checks. Show it once, keyed on the compressed label.
   const seen = new Set();
   const items = [];
-  tmpl.forEach(f => { const l = qcShort(f.msg), k = qcKey(l);
-    if (!seen.has(k)) { seen.add(k); items.push({ kind: 'tmpl', label: l, full: f.msg }); } });
-  fixes.forEach(f => { const l = qcShort(f.msg), k = qcKey(l);
-    if (!seen.has(k)) { seen.add(k); items.push({ kind: 'fix', label: l, full: f.msg }); } });
+  const add = (kind, label, full) => {
+    const k = qcKey(label);
+    if (seen.has(k)) return;
+    seen.add(k);
+    items.push({ kind, label, full: full || label });
+  };
+  tmpl.forEach(f => add('tmpl', qcShort(f.msg), f.msg));
+  fixes.forEach(f => {
+    // "Also blank: A, B, C" groups several fields into one message so the
+    // OneNote export stays compact. Chips are meant to be one item each, so
+    // split it back out — otherwise it truncates to something unreadable and
+    // counts three gaps as one.
+    const grouped = f.msg.match(/^Also blank:\s*(.+)$/i);
+    if (grouped) grouped[1].split(/,\s*/).filter(Boolean)
+      .forEach(lbl => add('fix', qcShort(lbl.trim()), lbl.trim()));
+    else add('fix', qcShort(f.msg), f.msg);
+  });
   return (
     <div style={{padding:'0.9rem 1.25rem 0'}}>
       <div style={{fontSize:'0.66rem', fontFamily:'var(--mono)', textTransform:'uppercase', letterSpacing:'0.06em', color:'var(--text3)', marginBottom:'0.4rem'}}>
@@ -2068,10 +2081,22 @@ function qcShort(msg) {
   m = m.replace(/ not documented$/, '');
   m = m.replace(/ not answered — required field$/, '');
   m = m.replace(/ — CSDM to fill in actual versions$/, '');
-  m = m.replace(/ still contains template placeholder text$/, ' — placeholder');
+  m = m.replace(/^(.*?)\s*still contains template placeholder text$/, '$1 — placeholder');
   m = m.replace(/ is "TBD" — needs.*$/, ' — TBD');
   m = m.replace(/^Weekly Accomplishments looks like filler.*$/, 'Weekly Accomplishments — filler');
-  return snip(m, 42);
+  // Shorten the longest template field names so chips stay compact
+  const ABBREV = [
+    [/Next Version(?: or|\/)\s*Decommission\s*[Pp]lan/g, 'Next Version'],
+    [/Frequency of [Ss]ervice [Hh]ealth [Rr]eviews/g, 'SHR Frequency'],
+    [/Link to [Rr]enewal [Pp]resentation\/[Ff]orm/g, 'Renewal Link'],
+    [/(?:Number of )?[Ss]ervice [Ii]nterruptions?(?: count)?(?: \(3mo\))?/g, 'Interruptions'],
+    [/Within 9 [Mm]onths? of [Cc]ontract [Ee]nd\??/g, 'Within 9 months'],
+    [/Weekly [Mm]eeting [Nn]otes [Ll]ink/g, 'Meeting Notes Link'],
+    [/[Cc]ompleted [Tt]his [Pp]eriod\??/g, 'SHR Completed'],
+    [/Weekly Accomplishments/g, 'Weekly Accompl.'],
+  ];
+  ABBREV.forEach(([re, to]) => { m = m.replace(re, to); });
+  return snip(m, 46);
 }
 
 function DomainSummary({ domains }) {
