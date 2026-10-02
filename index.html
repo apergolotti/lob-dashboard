@@ -2951,9 +2951,20 @@ function RenewalsView({ data }) {
 function KeyWinsView({ data }) {
   const [selected, setSelected] = useState({});
   const [copied, setCopied] = useState(false);
-  const [showAll, setShowAll] = useState(false);
   const [expanded, setExpanded] = useState(null); // LOB key for expanded view
+  const [ratingFilter, setRatingFilter] = useState({ H: true, M: true, L: true });
   const today = new Date().toISOString().slice(0,10);
+
+  // Check if content is just filler/placeholder
+  function isFillerContent(text) {
+    if (!text) return true;
+    const t = text.trim().toLowerCase();
+    // Trivial/placeholder entries
+    if (/^(none|n\/a|na|no|no wins?|nothing|same as usual|business as usual|bau|steady state|continuing|ongoing|routine|-|\.|\s*)$/i.test(t)) return true;
+    // Just "monitoring" or "no issues" type content
+    if (/^(monitoring|no (operational )?issues?|account (is )?stable|all (is )?quiet|status quo)\.?$/i.test(t)) return true;
+    return false;
+  }
 
   // Score a win - TRUE BIG WINS only (based on actual SAS customer data patterns)
   function scoreWin(text) {
@@ -3079,33 +3090,35 @@ function KeyWinsView({ data }) {
     return summaries.join('; ');
   }
 
-  // Build and score wins
+  // Build list of all Weekly Accomplishments
   const allWins = useMemo(() => {
     const results = data.map(row => {
       const sections = parseStatus(row.status);
-      const wins = sections.weeklyWins || '';
-      const score = scoreWin(wins);
+      const wins = (sections.weeklyWins || '').trim();
+      // Skip empty or filler-only content
+      const isFiller = !wins || wins.length < 10 || isFillerContent(wins);
+      const score = isFiller ? 0 : scoreWin(wins);
       const summary = extractWinSummary(wins);
-      // Debug: log accounts with RCA or Sargeant
       return {
         customer: row.customer,
         lob: row.lob,
         owner: row.owner,
         sentiment: row.sentiment,
-        wins: wins.trim(),
+        wins,
         summary: summary || wins.split('\n')[0]?.substring(0, 80) || '',
-        score
+        score,
+        hasContent: !isFiller
       };
     });
-    return results.filter(w => w.score > 0).sort((a, b) => b.score - a.score);
+    // Show all entries with actual content, sorted by score (high scores first)
+    // Add H/M/L rating based on score
+    return results.filter(w => w.hasContent).map(w => ({
+      ...w,
+      rating: w.score >= 10 ? 'H' : w.score >= 4 ? 'M' : 'L'
+    })).sort((a, b) => b.score - a.score);
   }, [data]);
 
-  // Only true big wins
-  const meaningfulWins = useMemo(() => {
-    return allWins.filter(w => w.score >= 6);
-  }, [allWins]);
-
-  const displayWins = showAll ? allWins : meaningfulWins;
+  const displayWins = allWins.filter(w => ratingFilter[w.rating]);
   const selectedCount = Object.values(selected).filter(Boolean).length;
 
   function toggleSelect(lob) {
@@ -3126,7 +3139,7 @@ function KeyWinsView({ data }) {
     const selectedWins = displayWins.filter(w => selected[w.lob]);
     if (selectedWins.length === 0) return;
     
-    let text = `Key Wins - Week of ${today}\n\n`;
+    let text = `Weekly Accomplishments - Week of ${today}\n\n`;
     selectedWins.forEach(w => {
       text += `• ${w.customer} (${w.owner}): ${w.summary}\n\n`;
     });
@@ -3141,19 +3154,38 @@ function KeyWinsView({ data }) {
     <div>
       <div style={{background:'var(--surface)', border:'1px solid var(--border)', borderRadius:'10px', padding:'1rem 1.25rem', marginBottom:'1rem'}}>
         <div style={{display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:'0.75rem'}}>
-          <div>
+          <div style={{flex:1}}>
             <div style={{fontWeight:600, fontSize:'0.95rem', color:'var(--text)'}}>
-              Big Wins This Week
+              Weekly Accomplishments
             </div>
             <div style={{fontSize:'0.78rem', color:'var(--text2)', marginTop:'2px'}}>
-              {meaningfulWins.length} wins (deals won, renewals, deployments, completed upgrades, environments built, RFCs signed)
+              {displayWins.length} of {allWins.length} accounts
             </div>
           </div>
-          <div style={{display:'flex', gap:'0.5rem', alignItems:'center'}}>
-            <label style={{fontSize:'0.78rem', color:'var(--text2)', display:'flex', alignItems:'center', gap:'0.35rem', cursor:'pointer'}}>
-              <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
-              Show all ({allWins.length})
-            </label>
+          <div style={{display:'flex', gap:'0.35rem', alignItems:'center'}}>
+            {['H','M','L'].map(r => {
+              const count = allWins.filter(w => w.rating === r).length;
+              const active = ratingFilter[r];
+              const labels = { H: '🎉 Big Win', M: '📈 Progress', L: '📋 Update' };
+              const colors = { H: {bg:'#dcfce7',color:'#16a34a'}, M: {bg:'#fef9c3',color:'#ca8a04'}, L: {bg:'var(--surface2)',color:'var(--text3)'} };
+              return (
+                <button
+                  key={r}
+                  onClick={() => setRatingFilter({...ratingFilter, [r]: !ratingFilter[r]})}
+                  style={{
+                    display:'flex', alignItems:'center', gap:'0.3rem',
+                    padding:'0.3rem 0.6rem', borderRadius:'6px', border:'1px solid',
+                    borderColor: active ? colors[r].color : 'var(--border)',
+                    background: active ? colors[r].bg : 'transparent',
+                    color: active ? colors[r].color : 'var(--text3)',
+                    fontSize:'0.75rem', fontWeight:500, cursor:'pointer',
+                    opacity: active ? 1 : 0.5
+                  }}
+                >
+                  {labels[r]} <span style={{fontWeight:400}}>({count})</span>
+                </button>
+              );
+            })}
           </div>
         </div>
         
@@ -3202,8 +3234,13 @@ function KeyWinsView({ data }) {
               <div style={{flex:1, minWidth:0}}>
                 <div style={{display:'flex', gap:'0.5rem', alignItems:'center', marginBottom:'0.35rem', flexWrap:'wrap'}}>
                   <span style={{fontWeight:500, color:'var(--text)'}}>{row.customer}</span>
-                  <span className={`pill pill-${row.sentiment.toLowerCase()}`} style={{fontSize:'0.7rem'}}>{row.sentiment}</span>
                   <span style={{fontSize:'0.75rem', color:'var(--text3)'}}>({row.owner})</span>
+                  <span style={{marginLeft:'auto',
+                    display:'inline-flex', alignItems:'center', gap:'0.25rem',
+                    padding:'0.2rem 0.5rem', borderRadius:'5px', fontSize:'0.72rem', fontWeight:500,
+                    background: row.rating === 'H' ? '#dcfce7' : row.rating === 'M' ? '#fef9c3' : 'var(--surface2)',
+                    color: row.rating === 'H' ? '#16a34a' : row.rating === 'M' ? '#ca8a04' : 'var(--text3)'
+                  }}>{row.rating === 'H' ? '🎉 Big Win!' : row.rating === 'M' ? '📈 Progress' : '📋 Update'}</span>
                 </div>
                 <div style={{fontSize:'0.88rem', color:'var(--text)', lineHeight:'1.5'}}>
                   {row.summary}
@@ -3245,7 +3282,7 @@ function KeyWinsView({ data }) {
 
       {displayWins.length === 0 && (
         <div style={{textAlign:'center', padding:'3rem', color:'var(--text3)'}}>
-          No big wins this week. Toggle "Show all" to see routine updates.
+          No Weekly Accomplishments documented this week.
         </div>
       )}
     </div>
