@@ -1542,21 +1542,6 @@ function generateExport(owner, accounts, notes, today) {
   if (offTmpl > 0) t += `Template:   ${offTmpl} of ${accounts.length} account${accounts.length!==1?'s':''} off the standard format\n`;
   t += `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n`;
 
-  // Portfolio scorecard across the owner's accounts
-  t += `PORTFOLIO SCORECARD\n`;
-  t += `${'─'.repeat(60)}\n`;
-  DOMAINS.forEach(d => {
-    const c = { good:0, watch:0, risk:0, nodata:0 };
-    accounts.forEach(a => { const st = scoreDomains(a, parseStatus(a.status))[d.key]?.state; if (st) c[st]++; });
-    const parts = [];
-    if (c.risk) parts.push(`${c.risk} risk`);
-    if (c.watch) parts.push(`${c.watch} watch`);
-    if (c.nodata) parts.push(`${c.nodata} blank`);
-    if (c.good) parts.push(`${c.good} ok`);
-    t += `  ${d.label.padEnd(24)} ${parts.join('  ·  ')}\n`;
-  });
-  t += `\n\n`;
-
   // Off-cadence updates (only meaningful when the export carries dates)
   const haveDates = accounts.some(a => a.updated);
   if (!haveDates) {
@@ -1587,16 +1572,9 @@ function generateExport(owner, accounts, notes, today) {
     t += `\n${'═'.repeat(60)}\n`;
     t += `${i+1}. ${a.customer}  [${a.lob}]\n`;
     t += `Owner: ${a.owner}  |  Sentiment: ${a.sentiment}  |  Operations: ${a.operations}`;
+    if (a.contractEnd) t += `  |  Contract End: ${formatDate(a.contractEnd)}`;
     t += a.updated ? `  |  Updated: ${weekdayName(a.updated)} ${formatDate(a.updated)}\n` : `\n`;
     t += `${'═'.repeat(60)}\n`;
-
-    // Domain scorecard
-    t += `\nSCORECARD:\n`;
-    DOMAINS.forEach(d => {
-      const dm = domains[d.key];
-      const mark = dm.state === 'risk' ? 'RISK ' : dm.state === 'watch' ? 'WATCH' : dm.state === 'nodata' ? 'BLANK' : 'OK   ';
-      t += `  [${mark}] ${d.label.padEnd(23)} ${dm.label}${dm.detail && dm.detail !== '—' ? ' — ' + dm.detail : ''}\n`;
-    });
 
     // Talking points, each with the question to ask
     if (points.length > 0) {
